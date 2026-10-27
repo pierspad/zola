@@ -560,6 +560,7 @@ impl Site {
         let library = Arc::make_mut(&mut self.library);
         library.pages.remove(&page.file.path);
         library.insert_page(page);
+        library.populate_colocated_assets(&self.config.default_language);
 
         Ok(())
     }
