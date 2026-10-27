@@ -1,3 +1,4 @@
+use ahash::AHashMap;
 use avif_parse::read_avif;
 use errors::{Context, Result, anyhow};
 use fs_err as fs;
@@ -6,14 +7,24 @@ use image::{ImageFormat, ImageResult};
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 use svg_metadata::Metadata as SvgMetadata;
 
 use crate::get_rotated_size;
 use crate::helpers::{get_created_datetime, get_description};
 
+type CacheEntry<T> = (u64, SystemTime, T);
+
+static META_CACHE: LazyLock<Mutex<AHashMap<PathBuf, CacheEntry<ImageMetaResponse>>>> =
+    LazyLock::new(|| Mutex::new(AHashMap::new()));
+
+static IMAGE_META_CACHE: LazyLock<Mutex<AHashMap<PathBuf, CacheEntry<ImageMeta>>>> =
+    LazyLock::new(|| Mutex::new(AHashMap::new()));
+
 /// Size and format read cheaply with `image`'s `Reader`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageMeta {
     /// (w, h)
     pub size: (u32, u32),
@@ -24,6 +35,30 @@ pub struct ImageMeta {
 
 impl ImageMeta {
     pub fn read(path: &Path) -> ImageResult<Self> {
+        let file_meta =
+            fs::metadata(path).ok().and_then(|m| m.modified().ok().map(|mtime| (m.len(), mtime)));
+
+        if let Some((len, mtime)) = file_meta {
+            let cache = IMAGE_META_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((cached_len, cached_mtime, cached_meta)) = cache.get(path)
+                && *cached_len == len
+                && *cached_mtime == mtime
+            {
+                return Ok(cached_meta.clone());
+            }
+        }
+
+        let meta = Self::read_uncached(path)?;
+
+        if let Some((len, mtime)) = file_meta {
+            let mut cache = IMAGE_META_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            cache.insert(path.to_path_buf(), (len, mtime, meta.clone()));
+        }
+
+        Ok(meta)
+    }
+
+    fn read_uncached(path: &Path) -> ImageResult<Self> {
         let reader = ImageReader::open(path).and_then(ImageReader::with_guessed_format)?;
         let format = reader.format();
         let mut decoder = reader.into_decoder()?;
@@ -55,7 +90,7 @@ impl ImageMeta {
     }
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
 pub struct ImageMetaResponse {
     pub width: u32,
     pub height: u32,
@@ -125,10 +160,30 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetaResponse>
         )
     };
 
-    match ext.as_str() {
+    let file_meta =
+        fs::metadata(path).ok().and_then(|m| m.modified().ok().map(|mtime| (m.len(), mtime)));
+
+    if let Some((len, mtime)) = file_meta {
+        let cache = META_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_len, cached_mtime, cached_meta)) = cache.get(path)
+            && *cached_len == len
+            && *cached_mtime == mtime
+        {
+            return Ok(cached_meta.clone());
+        }
+    }
+
+    let meta = match ext.as_str() {
         "svg" => ImageMetaResponse::new_svg(path),
         "avif" => ImageMetaResponse::new_avif(path),
         _ => ImageMeta::read(path).map(ImageMetaResponse::from).map_err(Into::into),
     }
-    .with_context(err_context)
+    .with_context(err_context)?;
+
+    if let Some((len, mtime)) = file_meta {
+        let mut cache = META_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(path.to_path_buf(), (len, mtime, meta.clone()));
+    }
+
+    Ok(meta)
 }
