@@ -41,6 +41,10 @@ pub struct Search {
     pub include_description: bool,
     /// Include the RFC3339 datetime of the page in the search index. `false` by default.
     pub include_date: bool,
+    /// Include the headings of the page in the search index. `false` by default.
+    pub include_headings: bool,
+    /// Include the taxonomies of the page in the search index. `false` by default.
+    pub include_taxonomies: bool,
     /// Include the path of the page in the search index. `false` by default.
     pub include_path: bool,
     /// Format of the search index to be produced. 'elasticlunr_javascript' by default.
@@ -55,6 +59,8 @@ impl Default for Search {
             include_description: false,
             include_path: false,
             include_date: false,
+            include_headings: false,
+            include_taxonomies: false,
             truncate_content_length: None,
             index_format: Default::default(),
         }
@@ -70,4 +76,32 @@ impl Search {
 #[derive(Serialize)]
 pub struct SerializedSearch<'a> {
     pub index_format: &'a IndexFormat,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_search_config() {
+        let search = Search::default();
+        assert!(search.include_title);
+        assert!(search.include_content);
+        assert!(!search.include_description);
+        assert!(!search.include_path);
+        assert!(!search.include_date);
+        assert!(!search.include_headings);
+        assert!(!search.include_taxonomies);
+    }
+
+    #[test]
+    fn deserialize_search_config() {
+        let toml_str = r#"
+            include_headings = true
+            include_taxonomies = true
+        "#;
+        let search: Search = toml::from_str(toml_str).unwrap();
+        assert!(search.include_headings);
+        assert!(search.include_taxonomies);
+    }
 }
