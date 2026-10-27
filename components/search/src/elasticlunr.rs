@@ -4,7 +4,7 @@ use elasticlunr::{IndexBuilder, lang};
 use errors::{Result, bail};
 use time::format_description::well_known::Rfc3339;
 
-use crate::{IndexItem, clean_and_truncate_body, collect_index_items};
+use crate::{IndexItem, clean_and_truncate_body, collect_index_items, extract_headings};
 
 pub const ELASTICLUNR_JS: &str = include_str!("elasticlunr.min.js");
 
@@ -18,7 +18,15 @@ fn build_fields(search_config: &Search, mut index: IndexBuilder) -> IndexBuilder
     }
 
     if search_config.include_date {
-        index = index.add_field("date")
+        index = index.add_field("date");
+    }
+
+    if search_config.include_headings {
+        index = index.add_field("headings");
+    }
+
+    if search_config.include_taxonomies {
+        index = index.add_field("taxonomies");
     }
 
     if search_config.include_path {
@@ -26,7 +34,7 @@ fn build_fields(search_config: &Search, mut index: IndexBuilder) -> IndexBuilder
     }
 
     if search_config.include_content {
-        index = index.add_field("body")
+        index = index.add_field("body");
     }
 
     index
@@ -55,6 +63,24 @@ fn fill_index(search_config: &Search, item: IndexItem) -> Vec<String> {
         && let Ok(d) = date.format(&Rfc3339)
     {
         row.push(d);
+    }
+
+    if search_config.include_headings {
+        row.push(extract_headings(item.toc).join(" "));
+    }
+
+    if search_config.include_taxonomies {
+        let terms = match item.taxonomies {
+            Some(taxonomies) => {
+                let mut all_terms = Vec::new();
+                for terms_list in taxonomies.values() {
+                    all_terms.extend(terms_list.iter().map(|s| s.as_str()));
+                }
+                all_terms.join(" ")
+            }
+            None => String::new(),
+        };
+        row.push(terms);
     }
 
     if search_config.include_path {
@@ -97,7 +123,9 @@ mod tests {
     use super::*;
     use config::Config;
     use elasticlunr::IndexBuilder;
+    use std::collections::BTreeMap;
     use time::OffsetDateTime;
+    use utils::table_of_contents::Heading;
 
     #[test]
     fn can_build_fields() {
@@ -117,6 +145,15 @@ mod tests {
         config.search.include_title = false;
         let index = build_fields(&config.search, IndexBuilder::new()).build();
         assert_eq!(index.get_fields(), vec!["description", "body"]);
+
+        config.search.include_headings = true;
+        config.search.include_taxonomies = true;
+        config.search.include_date = true;
+        let index = build_fields(&config.search, IndexBuilder::new()).build();
+        assert_eq!(
+            index.get_fields(),
+            vec!["description", "date", "headings", "taxonomies", "body"]
+        );
     }
 
     #[test]
@@ -134,6 +171,8 @@ mod tests {
             datetime: &None,
             path: &path,
             content: &content,
+            toc: &[],
+            taxonomies: None,
         };
 
         let res = fill_index(&config.search, item);
@@ -158,6 +197,8 @@ mod tests {
             datetime: &None,
             path: &path,
             content: &content,
+            toc: &[],
+            taxonomies: None,
         };
 
         let res = fill_index(&config.search, item);
@@ -183,6 +224,8 @@ mod tests {
             datetime: &None,
             path: &path,
             content: &content,
+            toc: &[],
+            taxonomies: None,
         };
 
         let res = fill_index(&config.search, item);
@@ -208,12 +251,83 @@ mod tests {
             datetime: &datetime,
             path: &path,
             content: &content,
+            toc: &[],
+            taxonomies: None,
         };
 
         let res = fill_index(&config.search, item);
         assert_eq!(res.len(), 3);
         assert_eq!(res[0], title.unwrap());
         assert_eq!(res[1], "2023-01-31T00:00:00Z");
+        assert_eq!(res[2], content);
+    }
+
+    #[test]
+    fn can_fill_index_headings() {
+        let mut config = Config::default();
+        config.search.include_headings = true;
+        let title = Some("A title".to_string());
+        let description = Some("A description".to_string());
+        let path = "/a/page/".to_string();
+        let content = "Some content".to_string();
+        let toc = vec![
+            Heading {
+                title: "Intro".to_string(),
+                children: vec![Heading {
+                    title: "Deep dive".to_string(),
+                    children: vec![],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Heading { title: "Outro".to_string(), children: vec![], ..Default::default() },
+        ];
+
+        let item = crate::IndexItem {
+            url: "http://example.com",
+            title: &title,
+            description: &description,
+            datetime: &None,
+            path: &path,
+            content: &content,
+            toc: &toc,
+            taxonomies: None,
+        };
+
+        let res = fill_index(&config.search, item);
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], title.unwrap());
+        assert_eq!(res[1], "Intro Deep dive Outro");
+        assert_eq!(res[2], content);
+    }
+
+    #[test]
+    fn can_fill_index_taxonomies() {
+        let mut config = Config::default();
+        config.search.include_taxonomies = true;
+        let title = Some("A title".to_string());
+        let description = Some("A description".to_string());
+        let path = "/a/page/".to_string();
+        let content = "Some content".to_string();
+        let mut taxonomies = BTreeMap::new();
+        taxonomies.insert("categories".to_string(), vec!["Rust".to_string()]);
+        taxonomies.insert("tags".to_string(), vec!["Search".to_string(), "Zola".to_string()]);
+
+        let item = crate::IndexItem {
+            url: "http://example.com",
+            title: &title,
+            description: &description,
+            datetime: &None,
+            path: &path,
+            content: &content,
+            toc: &[],
+            taxonomies: Some(&taxonomies),
+        };
+
+        let res = fill_index(&config.search, item);
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], title.unwrap());
+        assert_eq!(res[1], "Rust Search Zola");
         assert_eq!(res[2], content);
     }
 }

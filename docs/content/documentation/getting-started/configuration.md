@@ -250,6 +250,10 @@ include_title = true
 include_description = false
 # Whether to include the RFC3339 datetime of the page in the search index
 include_date = false
+# Whether to include the headings of the page/section in the index (as an array of strings, e.g. ["H1", "H2"])
+include_headings = false
+# Whether to include the taxonomies of the page in the index (as an object, e.g. {"tags": [...], "categories": [...]})
+include_taxonomies = false
 # Whether to include the path of the page/section in the index (the permalink is always included)
 include_path = false
 # Whether to include the rendered content of the page/section in the index

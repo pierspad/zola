@@ -2,9 +2,10 @@ mod elasticlunr;
 mod fuse;
 
 use content::Library;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::LazyLock;
 use time::OffsetDateTime;
+use utils::table_of_contents::Heading;
 
 pub use elasticlunr::{ELASTICLUNR_JS, build_index as build_elasticlunr};
 pub use fuse::build_index as build_fuse;
@@ -42,6 +43,20 @@ pub fn clean_and_truncate_body(truncate_content_length: Option<usize>, body: &st
     clean
 }
 
+/// Extracts all heading titles recursively from a table of contents in pre-order.
+fn extract_headings(toc: &[Heading]) -> Vec<&str> {
+    let mut headings = Vec::new();
+    extract_headings_internal(toc, &mut headings);
+    headings
+}
+
+fn extract_headings_internal<'a>(toc: &'a [Heading], acc: &mut Vec<&'a str>) {
+    for heading in toc {
+        acc.push(&heading.title);
+        extract_headings_internal(&heading.children, acc);
+    }
+}
+
 /// A single page or section that should be included in the search index
 /// for a specific language.
 struct IndexItem<'a> {
@@ -51,6 +66,8 @@ struct IndexItem<'a> {
     content: &'a String,
     datetime: &'a Option<OffsetDateTime>,
     path: &'a String,
+    toc: &'a [Heading],
+    taxonomies: Option<&'a BTreeMap<String, Vec<String>>>,
 }
 
 /// Collect all pages and sections which should be included in the search index
@@ -75,6 +92,8 @@ fn collect_index_items<'a>(lang: &str, library: &'a Library) -> Vec<IndexItem<'a
                     description: &section.meta.description,
                     content: &section.content,
                     path: &section.path,
+                    toc: &section.toc,
+                    taxonomies: None,
                 },
             );
         }
@@ -91,6 +110,8 @@ fn collect_index_items<'a>(lang: &str, library: &'a Library) -> Vec<IndexItem<'a
                         description: &page.meta.description,
                         content: &page.content,
                         path: &page.path,
+                        toc: &page.toc,
+                        taxonomies: Some(&page.meta.taxonomies),
                     },
                 );
             }
@@ -114,4 +135,37 @@ fn clean_and_truncate_body_test() {
     assert_eq!(clean_and_truncate_body(None, "hello        world"), "hello world");
     assert_eq!(clean_and_truncate_body(None, "hello    \n    world"), "hello\nworld");
     assert_eq!(clean_and_truncate_body(None, "\n hello  \n \n \n   world\n   "), "hello\nworld");
+}
+
+#[cfg(test)]
+#[test]
+fn extract_headings_test() {
+    let toc = vec![
+        Heading {
+            title: "Heading 1".to_string(),
+            children: vec![
+                Heading {
+                    title: "Heading 1.1".to_string(),
+                    children: vec![Heading {
+                        title: "Heading 1.1.1".to_string(),
+                        children: vec![],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                Heading {
+                    title: "Heading 1.2".to_string(),
+                    children: vec![],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+        Heading { title: "Heading 2".to_string(), children: vec![], ..Default::default() },
+    ];
+    let headings = extract_headings(&toc);
+    assert_eq!(
+        headings,
+        vec!["Heading 1", "Heading 1.1", "Heading 1.1.1", "Heading 1.2", "Heading 2"]
+    );
 }
