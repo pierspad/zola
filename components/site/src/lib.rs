@@ -1,4 +1,5 @@
 pub mod feeds;
+pub mod git;
 pub mod link_checking;
 mod md_render;
 mod minify;
@@ -304,8 +305,19 @@ impl Site {
             return Err(anyhow!("Failed to parse {} page(s):\n{}", errors.len(), msg.trim_end()));
         }
 
-        let pages: Vec<Page> = pages.into_iter().map(|(_, r)| r.unwrap()).collect();
+        let mut pages: Vec<Page> = pages.into_iter().map(|(_, r)| r.unwrap()).collect();
         self.create_default_index_sections()?;
+
+        if self.config.infer_updated_from_git {
+            let git_dates = git::infer_all_pages_updated_from_git(&self.base_path);
+            for page in &mut pages {
+                if page.meta.updated.is_none()
+                    && let Some(date) = git_dates.get(&page.file.path)
+                {
+                    git::apply_inferred_updated(page, date);
+                }
+            }
+        }
 
         for page in pages {
             // should we skip drafts?
@@ -564,8 +576,14 @@ impl Site {
     /// Adds a page to the site and render it
     /// Only used in `zola serve --fast`
     pub fn add_and_render_page(&mut self, path: &Path) -> Result<()> {
-        let page = Page::from_file(path, &self.config, &self.base_path)
+        let mut page = Page::from_file(path, &self.config, &self.base_path)
             .with_context(|| format!("Failed to parse page `{}`", path.display()))?;
+        if self.config.infer_updated_from_git
+            && page.meta.updated.is_none()
+            && let Some(git_date) = git::infer_page_updated_from_git(&self.base_path, path)
+        {
+            git::apply_inferred_updated(&mut page, &git_date);
+        }
         self.add_page(page, true)?;
         let page = self.library.pages.get(path).unwrap();
         Queue::single_page(self, page).process()

@@ -120,6 +120,8 @@ pub struct Config {
     pub generate_robots_txt: bool,
     /// Whether to exclude paginated pages in sitemap; can take values "none", "all"
     pub exclude_paginated_pages_in_sitemap: ExcludePaginatedPagesInSitemap,
+    /// Whether to infer the page updated date from git commits if not set. Defaults to false.
+    pub infer_updated_from_git: bool,
 }
 
 #[derive(Serialize)]
@@ -142,6 +144,7 @@ pub struct SerializedConfig<'a> {
     generate_sitemap: bool,
     generate_robots_txt: bool,
     exclude_paginated_pages_in_sitemap: ExcludePaginatedPagesInSitemap,
+    infer_updated_from_git: bool,
 }
 
 impl Config {
@@ -415,6 +418,7 @@ impl Config {
             generate_sitemap: self.generate_sitemap,
             generate_robots_txt: self.generate_robots_txt,
             exclude_paginated_pages_in_sitemap: self.exclude_paginated_pages_in_sitemap,
+            infer_updated_from_git: self.infer_updated_from_git,
         }
     }
 }
@@ -488,6 +492,7 @@ impl Default for Config {
             generate_sitemap: true,
             generate_robots_txt: true,
             exclude_paginated_pages_in_sitemap: ExcludePaginatedPagesInSitemap::None,
+            infer_updated_from_git: false,
         }
     }
 }
@@ -1140,6 +1145,27 @@ base_url = "example.com"
 "#;
         let config = Config::parse(config).unwrap();
         assert!(config.generate_robots_txt);
+    }
+
+    #[test]
+    fn default_infer_updated_from_git_false() {
+        let config = r#"
+title = "My Site"
+base_url = "example.com"
+"#;
+        let config = Config::parse(config).unwrap();
+        assert!(!config.infer_updated_from_git);
+    }
+
+    #[test]
+    fn parse_infer_updated_from_git_true() {
+        let config = r#"
+title = "My Site"
+base_url = "example.com"
+infer_updated_from_git = true
+"#;
+        let config = Config::parse(config).unwrap();
+        assert!(config.infer_updated_from_git);
     }
 
     // TODO: add a test for excluding paginated pages

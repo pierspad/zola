@@ -1045,3 +1045,250 @@ fn can_find_site_and_page_authors() {
 fn current_path(path: &str) -> String {
     format!("[current_path]({})", path)
 }
+
+#[test]
+fn test_infer_updated_from_git() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let site_path = dir.path();
+
+    let run_git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(site_path)
+            .args(args)
+            .status()
+            .expect("execute git command");
+        assert!(status.success(), "git command {:?} failed", args);
+    };
+
+    run_git(&["init"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    run_git(&["config", "user.name", "Test User"]);
+    run_git(&["config", "commit.gpgSign", "false"]);
+
+    std::fs::write(
+        site_path.join("config.toml"),
+        r#"
+base_url = "https://example.com"
+title = "Git Updated Test"
+compile_sass = false
+build_search_index = false
+infer_updated_from_git = true
+"#,
+    )
+    .unwrap();
+
+    let content_dir = site_path.join("content");
+    std::fs::create_dir_all(&content_dir).unwrap();
+
+    let templates_dir = site_path.join("templates");
+    std::fs::create_dir_all(&templates_dir).unwrap();
+    std::fs::write(templates_dir.join("index.html"), "{{ section.content | safe }}").unwrap();
+    std::fs::write(templates_dir.join("page.html"), "{{ page.content | safe }}").unwrap();
+
+    // Page A: date in the past, no explicit updated -> should infer commit date
+    std::fs::write(
+        content_dir.join("page-a.md"),
+        r#"+++
+title = "Page A"
+date = 2025-01-01
++++
+Page A content
+"#,
+    )
+    .unwrap();
+
+    // Page B: date in the future (or same as commit), no explicit updated -> updated remains None
+    std::fs::write(
+        content_dir.join("page-b.md"),
+        r#"+++
+title = "Page B"
+date = 2099-01-01
++++
+Page B content
+"#,
+    )
+    .unwrap();
+
+    // Page C: explicit updated -> explicit updated preserved
+    std::fs::write(
+        content_dir.join("page-c.md"),
+        r#"+++
+title = "Page C"
+date = 2025-01-01
+updated = 2025-06-01
++++
+Page C content
+"#,
+    )
+    .unwrap();
+
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "Initial commit"]);
+
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(site_path)
+        .args(["log", "-1", "--format=%cs"])
+        .output()
+        .expect("git log");
+    let today_str = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+    let mut site = Site::new(site_path, "config.toml").unwrap();
+    site.load().unwrap();
+
+    let page_a = site.library.pages.get(&content_dir.join("page-a.md")).unwrap();
+    assert_eq!(page_a.meta.updated, Some(today_str.clone()));
+    assert!(page_a.meta.updated_datetime.is_some());
+
+    let page_b = site.library.pages.get(&content_dir.join("page-b.md")).unwrap();
+    assert_eq!(page_b.meta.updated, None);
+    assert_eq!(page_b.meta.updated_datetime, None);
+
+    let page_c = site.library.pages.get(&content_dir.join("page-c.md")).unwrap();
+    assert_eq!(page_c.meta.updated, Some("2025-06-01".to_string()));
+
+    // Build the site and inspect sitemap.xml
+    let public = site_path.join("public");
+    site.set_output_path(&public);
+    site.build().expect("build site");
+
+    let sitemap_content = std::fs::read_to_string(public.join("sitemap.xml")).unwrap();
+    // Page A sitemap entry has inferred git date as lastmod
+    assert!(
+        sitemap_content.contains(&format!("<lastmod>{}</lastmod>", today_str)),
+        "sitemap should contain today's commit date: {}",
+        sitemap_content
+    );
+    // Page B sitemap entry has creation date as lastmod, not commit date
+    assert!(
+        sitemap_content.contains("<lastmod>2099-01-01</lastmod>"),
+        "sitemap should contain 2099-01-01: {}",
+        sitemap_content
+    );
+    // Page C sitemap entry has explicit updated as lastmod
+    assert!(
+        sitemap_content.contains("<lastmod>2025-06-01</lastmod>"),
+        "sitemap should contain 2025-06-01: {}",
+        sitemap_content
+    );
+
+    // Test fast rebuild with add_and_render_page
+    site.enable_serve_mode(site::BuildMode::Disk);
+    site.add_and_render_page(&content_dir.join("page-a.md")).unwrap();
+    let re_page_a = site.library.pages.get(&content_dir.join("page-a.md")).unwrap();
+    assert_eq!(re_page_a.meta.updated, Some(today_str));
+
+    site.add_and_render_page(&content_dir.join("page-b.md")).unwrap();
+    let re_page_b = site.library.pages.get(&content_dir.join("page-b.md")).unwrap();
+    assert_eq!(re_page_b.meta.updated, None);
+
+    site.add_and_render_page(&content_dir.join("page-c.md")).unwrap();
+    let re_page_c = site.library.pages.get(&content_dir.join("page-c.md")).unwrap();
+    assert_eq!(re_page_c.meta.updated, Some("2025-06-01".to_string()));
+}
+
+#[test]
+fn test_infer_updated_from_git_disabled_by_default() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let site_path = dir.path();
+
+    let run_git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(site_path)
+            .args(args)
+            .status()
+            .expect("execute git command");
+        assert!(status.success(), "git command {:?} failed", args);
+    };
+
+    run_git(&["init"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    run_git(&["config", "user.name", "Test User"]);
+    run_git(&["config", "commit.gpgSign", "false"]);
+
+    std::fs::write(
+        site_path.join("config.toml"),
+        r#"
+base_url = "https://example.com"
+title = "Git Updated Disabled Test"
+compile_sass = false
+build_search_index = false
+"#,
+    )
+    .unwrap();
+
+    let content_dir = site_path.join("content");
+    std::fs::create_dir_all(&content_dir).unwrap();
+
+    let templates_dir = site_path.join("templates");
+    std::fs::create_dir_all(&templates_dir).unwrap();
+    std::fs::write(templates_dir.join("index.html"), "{{ section.content | safe }}").unwrap();
+    std::fs::write(templates_dir.join("page.html"), "{{ page.content | safe }}").unwrap();
+
+    std::fs::write(
+        content_dir.join("page.md"),
+        r#"+++
+title = "Page"
+date = 2025-01-01
++++
+Page content
+"#,
+    )
+    .unwrap();
+
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "Initial commit"]);
+
+    let mut site = Site::new(site_path, "config.toml").unwrap();
+    site.load().unwrap();
+
+    let page = site.library.pages.get(&content_dir.join("page.md")).unwrap();
+    assert_eq!(page.meta.updated, None);
+}
+
+#[test]
+fn test_infer_updated_from_git_non_git_repo_fails_gracefully() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let site_path = dir.path();
+
+    std::fs::write(
+        site_path.join("config.toml"),
+        r#"
+base_url = "https://example.com"
+title = "Non Git Test"
+compile_sass = false
+build_search_index = false
+infer_updated_from_git = true
+"#,
+    )
+    .unwrap();
+
+    let content_dir = site_path.join("content");
+    std::fs::create_dir_all(&content_dir).unwrap();
+
+    let templates_dir = site_path.join("templates");
+    std::fs::create_dir_all(&templates_dir).unwrap();
+    std::fs::write(templates_dir.join("index.html"), "{{ section.content | safe }}").unwrap();
+    std::fs::write(templates_dir.join("page.html"), "{{ page.content | safe }}").unwrap();
+
+    std::fs::write(
+        content_dir.join("page.md"),
+        r#"+++
+title = "Page"
+date = 2025-01-01
++++
+Page content
+"#,
+    )
+    .unwrap();
+
+    let mut site = Site::new(site_path, "config.toml").unwrap();
+    // Site::load should succeed gracefully even when not a git repo
+    site.load().unwrap();
+
+    let page = site.library.pages.get(&content_dir.join("page.md")).unwrap();
+    assert_eq!(page.meta.updated, None);
+}
+
