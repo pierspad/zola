@@ -150,7 +150,9 @@ smart_punctuation = false
 # Whether parsing of definition lists is enabled
 definition_list = false
 
-# Whether to set decoding="async" and loading="lazy" for all images
+# Whether to set decoding="async" and loading="lazy" for images
+# To preserve Largest Contentful Paint (LCP) performance, the first image omits loading="lazy"
+# (loading eagerly) with decoding="async", while subsequent images are lazy-loaded.
 # When turned on, the alt text must be plain text.
 # For example, `![xx](...)` is ok but `![*x*x](...)` isn’t ok
 lazy_async_image = false
