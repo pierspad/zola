@@ -71,7 +71,12 @@ impl GetUrl {
         let mut f = fs::File::open(file_path).ok()?;
         let mut contents = Vec::new();
         f.read_to_end(&mut contents).ok()?;
-        let hash = compute_hash::<Sha256>(&contents, false);
+        let data = if self.config.minify_html {
+            utils::minify::minify_asset_bytes(file_path, &contents).unwrap_or(contents)
+        } else {
+            contents
+        };
+        let hash = compute_hash::<Sha256>(&data, false);
         cache.insert(cache_key.to_string(), hash.clone());
         Some(hash)
     }
@@ -210,12 +215,24 @@ pub struct GetHash {
     base_path: PathBuf,
     theme: Option<String>,
     output_path: PathBuf,
+    minify_html: bool,
     result_cache: Mutex<HashMap<(String, u16, bool), String>>,
 }
 
 impl GetHash {
-    pub fn new(base_path: PathBuf, theme: Option<String>, output_path: PathBuf) -> Self {
-        Self { base_path, theme, output_path, result_cache: Mutex::new(HashMap::new()) }
+    pub fn new(
+        base_path: PathBuf,
+        theme: Option<String>,
+        output_path: PathBuf,
+        minify_html: bool,
+    ) -> Self {
+        Self {
+            base_path,
+            theme,
+            output_path,
+            minify_html,
+            result_cache: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -270,7 +287,13 @@ impl Function<TeraResult<String>> for GetHash {
                     Error::message(format!("File {} could not be read: {}", key.0, e))
                 })?;
 
-                (contents, Some(key))
+                let data = if self.minify_html {
+                    utils::minify::minify_asset_bytes(&file_path, &contents).unwrap_or(contents)
+                } else {
+                    contents
+                };
+
+                (data, Some(key))
             }
             (None, Some(literal_v)) => (literal_v.into_bytes(), None),
         };
@@ -293,7 +316,7 @@ impl Function<TeraResult<String>> for GetHash {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetHash, GetUrl};
+    use super::{GetHash, GetUrl, compute_hash};
 
     use ahash::AHashMap;
     use fs_err as fs;
@@ -704,7 +727,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha256_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
@@ -721,7 +744,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha256_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
@@ -738,7 +761,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha384_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
@@ -754,7 +777,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha384() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([("path", tera::Value::from("app.css"))]);
         let ctx = Context::new();
@@ -767,7 +790,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha512_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
@@ -784,7 +807,7 @@ title = "A title"
     #[test]
     fn can_get_file_hash_sha512() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
@@ -800,7 +823,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha256_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("literal", tera::Value::from("Hello World")),
@@ -817,7 +840,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha256_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("literal", tera::Value::from("Hello World")),
@@ -834,7 +857,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha384_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("literal", tera::Value::from("Hello World")),
@@ -850,7 +873,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha384() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([("literal", tera::Value::from("Hello World"))]);
         let ctx = Context::new();
@@ -863,7 +886,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha512_no_base64() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("literal", tera::Value::from("Hello World")),
@@ -880,7 +903,7 @@ title = "A title"
     #[test]
     fn can_get_hash_sha512() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([
             ("literal", tera::Value::from("Hello World")),
@@ -918,7 +941,7 @@ title = "A title"
     #[test]
     fn error_when_file_not_found_for_hash() {
         let dir = create_temp_dir();
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
 
         let kwargs = Kwargs::from([("path", tera::Value::from("doesnt-exist"))]);
         let ctx = Context::new();
@@ -959,5 +982,28 @@ title = "A title"
         ]);
         let url = get_url.call(kwargs, &State::new(&ctx)).unwrap();
         assert_eq!(url, "https://remplace-par-ton-url.fr/en/");
+    }
+
+    #[test]
+    fn get_hash_minifies_asset_when_enabled() {
+        let dir = tempdir().unwrap();
+        create_file(&dir.path().join("style.css"), "body {\n    color: red;\n}").unwrap();
+
+        let get_hash_unminified =
+            GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
+        let get_hash_minified = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), true);
+
+        let kwargs1 = Kwargs::from([("path", tera::Value::from("style.css"))]);
+        let kwargs2 = Kwargs::from([("path", tera::Value::from("style.css"))]);
+        let ctx = Context::new();
+        let hash_unminified = get_hash_unminified.call(kwargs1, &State::new(&ctx)).unwrap();
+        let hash_minified = get_hash_minified.call(kwargs2, &State::new(&ctx)).unwrap();
+
+        assert_ne!(hash_unminified, hash_minified);
+
+        // Directly hash minified bytes to ensure it matches
+        let min_bytes = b"body{color:red}";
+        let expected_hash = compute_hash::<sha2::Sha384>(min_bytes, true);
+        assert_eq!(hash_minified, expected_hash);
     }
 }
