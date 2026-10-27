@@ -159,7 +159,7 @@ pub struct Markdown {
     pub definition_list: bool,
     /// Whether footnotes are rendered at the bottom in the style of GitHub.
     pub bottom_footnotes: bool,
-    /// Add loading="lazy" decoding="async" to img tags. When turned on, the alt text must be plain text. Defaults to false
+    /// Add loading="lazy" decoding="async" to img tags (the first image omits loading="lazy" to optimize LCP). When turned on, the alt text must be plain text. Defaults to false
     pub lazy_async_image: bool,
     /// Whether to insert a link for each header like the ones you can see in this site if you hover one
     /// The default template can be overridden by creating a `anchor-link.html` in the `templates` directory
