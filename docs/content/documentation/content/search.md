@@ -45,3 +45,8 @@ Compatible with [fuse.js](https://www.fusejs.io/) and [tinysearch](https://githu
 [search]
 index_format = "fuse_javascript" # or "fuse_json"
 ```
+
+When using Fuse.js, the generated index contains an array of objects with the enabled fields. The optional fields use the following schema:
+- `date`: An RFC3339 formatted string (e.g. `"2026-10-27T10:00:00Z"`).
+- `headings`: An array of strings representing table of contents heading titles (e.g. `["Introduction", "Usage"]`). Can be queried in Fuse.js using the key `"headings"`.
+- `taxonomies`: An object mapping taxonomy names to term arrays (e.g. `{"tags": ["rust", "zola"], "categories": ["dev"]}`). In Fuse.js, nested terms can be queried using dot notation keys like `"taxonomies.tags"` or `"taxonomies.categories"`.

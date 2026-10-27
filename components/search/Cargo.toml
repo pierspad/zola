@@ -14,6 +14,7 @@ rayon = { workspace = true }
 errors = { workspace = true }
 content = { workspace = true }
 config = { workspace = true }
+utils = { workspace = true }
 
 [features]
 indexing-zh = ["elasticlunr-rs/zh"]
