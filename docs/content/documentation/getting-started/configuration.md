@@ -121,6 +121,9 @@ generate_sitemap = true
 # When set to "false", robots.txt is not generated
 generate_robots_txt = true
 
+# Whether to infer the page updated date from git commits if not set in frontmatter
+infer_updated_from_git = false
+
 # Configuration of the Markdown rendering
 [markdown]
 # When set to "true", emoji aliases translated to their corresponding
