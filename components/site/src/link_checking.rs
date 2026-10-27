@@ -1,6 +1,6 @@
 use core::time;
-use std::path::{Path, PathBuf};
-use std::{cmp, collections::HashMap, collections::HashSet, iter::FromIterator, thread};
+use std::path::Path;
+use std::{cmp, collections::HashMap, thread};
 
 use config::LinkCheckerLevel;
 use globset::GlobSet;
@@ -35,54 +35,84 @@ pub fn check_internal_links_with_anchors(site: &Site) -> Vec<String> {
         .flat_map(|p| p.internal_links.iter().map(move |l| (&p.file.path, l)));
     let all_links = page_links.chain(section_links);
 
-    // Only keep links with anchor fragments.
-    // Bare files have already been checked elsewhere, thus they are not interesting here.
-    let links_with_anchors: Vec<_> = all_links
-        .filter_map(|(page_path, link)| match link {
-            (md_path, Some(anchor)) => Some((page_path, md_path, anchor)),
-            _ => None,
-        })
-        .filter(|(_, _, anchor)| !is_special_anchor(anchor))
-        .collect();
-    let anchors_total = links_with_anchors.len();
+    // Group links by target markdown file and anchor:
+    // md_path -> (anchor -> Vec<page_path>)
+    let mut targets_by_file: HashMap<&str, HashMap<&str, Vec<&Path>>> = HashMap::new();
+    let mut anchors_total = 0;
+
+    for (page_path, link) in all_links {
+        if let (md_path, Some(anchor)) = link
+            && !is_special_anchor(anchor)
+        {
+            anchors_total += 1;
+            targets_by_file
+                .entry(md_path.as_str())
+                .or_default()
+                .entry(anchor.as_str())
+                .or_default()
+                .push(page_path.as_path());
+        }
+    }
+
+    let content_dir = site.base_path.join("content");
 
     // Check for targets existence (including anchors), then keep only the faulty
     // entries for error reporting purposes.
-    let missing_targets = links_with_anchors.par_iter().filter(|(page, md_path, anchor)| {
-        // There are a few `expect` here since the presence of the .md file will
-        // already have been checked in the markdown rendering
-        let mut full_path = site.base_path.clone();
-        full_path.push("content");
-        for part in md_path.split('/') {
-            full_path.push(part);
-        }
-        // NOTE: This will also match _index.foobar.md where foobar is not a language
-        // as well as any other string containing "_index." which is now referenced as
-        // unsupported page path in the docs.
-        if md_path.contains("_index.") {
-            let section = site.library.sections.get(&full_path).unwrap_or_else(|| {
-                panic!(
-                    "Couldn't find section {} in check_internal_links_with_anchors from page {:?}",
-                    md_path,
-                    page.strip_prefix(&site.base_path).unwrap()
-                )
-            });
-            !section.has_anchor(anchor)
-        } else {
-            let page = site.library.pages.get(&full_path).unwrap_or_else(|| {
-                panic!(
-                    "Couldn't find page {} in check_internal_links_with_anchors from page {:?}",
-                    md_path,
-                    page.strip_prefix(&site.base_path).unwrap()
-                )
-            });
+    // Target files and anchors are checked once, even when referenced by many pages.
+    let missing_targets: Vec<(&Path, &str, &str)> = targets_by_file
+        .par_iter()
+        .flat_map(|(md_path, anchors)| {
+            // There are a few `expect` here since the presence of the .md file will
+            // already have been checked in the markdown rendering
+            let mut full_path = content_dir.clone();
+            for part in md_path.split('/') {
+                full_path.push(part);
+            }
 
-            !(page.has_anchor(anchor) || page.has_anchor_id(anchor))
-        }
-    });
+            let mut faulty = Vec::new();
+            // NOTE: This will also match _index.foobar.md where foobar is not a language
+            // as well as any other string containing "_index." which is now referenced as
+            // unsupported page path in the docs.
+            if md_path.contains("_index.") {
+                let section = site.library.sections.get(&full_path).unwrap_or_else(|| {
+                    let first_page = anchors.values().next().and_then(|v| v.first()).unwrap();
+                    panic!(
+                        "Couldn't find section {} in check_internal_links_with_anchors from page {:?}",
+                        md_path,
+                        first_page.strip_prefix(&site.base_path).unwrap()
+                    )
+                });
+                for (&anchor, pages) in anchors {
+                    if !section.has_anchor(anchor) {
+                        for page_path in pages {
+                            faulty.push((*page_path, *md_path, anchor));
+                        }
+                    }
+                }
+            } else {
+                let page = site.library.pages.get(&full_path).unwrap_or_else(|| {
+                    let first_page = anchors.values().next().and_then(|v| v.first()).unwrap();
+                    panic!(
+                        "Couldn't find page {} in check_internal_links_with_anchors from page {:?}",
+                        md_path,
+                        first_page.strip_prefix(&site.base_path).unwrap()
+                    )
+                });
+                for (&anchor, pages) in anchors {
+                    if !(page.has_anchor(anchor) || page.has_anchor_id(anchor)) {
+                        for page_path in pages {
+                            faulty.push((*page_path, *md_path, anchor));
+                        }
+                    }
+                }
+            }
+            faulty
+        })
+        .collect();
 
     // Format faulty entries into error messages, and collect them.
     let mut messages = missing_targets
+        .into_iter()
         .map(|(page_path, md_path, anchor)| {
             format!(
                 "The anchor in the link `@/{}#{}` in {} does not exist.",
@@ -128,38 +158,22 @@ fn get_link_domain(link: &str) -> Result<String> {
 /// Checks all external links and returns all the errors that were encountered.
 /// Empty vec == all good
 pub fn check_external_links(site: &Site) -> Vec<String> {
-    struct LinkDef {
-        file_path: PathBuf,
-        external_link: String,
-        domain: String,
-    }
-
-    impl LinkDef {
-        pub fn new(file_path: &Path, external_link: &str, domain: String) -> Self {
-            Self {
-                file_path: file_path.to_path_buf(),
-                external_link: external_link.to_string(),
-                domain,
-            }
-        }
-    }
-
     let mut messages: Vec<String> = vec![];
-    let mut external_links = Vec::new();
-    for p in site.library.pages.values() {
-        external_links.push((&p.file.path, &p.external_links));
-    }
-    for s in site.library.sections.values() {
-        external_links.push((&s.file.path, &s.external_links));
-    }
-
-    let mut checked_links: Vec<LinkDef> = vec![];
     let mut skipped_link_count: u32 = 0;
     let mut invalid_url_links: u32 = 0;
+
+    // Group external links by domain and unique URL:
+    // domain -> (external_link -> Vec<referring_file_path>)
+    let mut links_by_domain: HashMap<String, HashMap<&str, Vec<&Path>>> = HashMap::new();
+
     // First we look at all the external links, skip those the user wants to skip and record
     // the ones that have invalid URLs
     let ignored_files_globset = site.config.link_checker.ignored_files_globset.as_ref().unwrap();
-    for (file_path, links) in external_links {
+
+    let page_links = site.library.pages.values().map(|p| (&p.file.path, &p.external_links));
+    let section_links = site.library.sections.values().map(|s| (&s.file.path, &s.external_links));
+
+    for (file_path, links) in page_links.chain(section_links) {
         for link in links {
             if should_skip_by_prefix(link, &site.config.link_checker.skip_prefixes)
                 || should_skip_by_file(file_path, ignored_files_globset)
@@ -168,7 +182,12 @@ pub fn check_external_links(site: &Site) -> Vec<String> {
             } else {
                 match get_link_domain(link) {
                     Ok(domain) => {
-                        checked_links.push(LinkDef::new(file_path, link, domain));
+                        links_by_domain
+                            .entry(domain)
+                            .or_default()
+                            .entry(link.as_str())
+                            .or_default()
+                            .push(file_path.as_path());
                     }
                     Err(err) => {
                         // We could use the messages.len() to keep track of them for below
@@ -181,11 +200,7 @@ pub fn check_external_links(site: &Site) -> Vec<String> {
         }
     }
 
-    // Get unique links count from Vec by creating a temporary HashSet.
-    let unique_links_count = HashSet::<&str>::from_iter(
-        checked_links.iter().map(|link_def| link_def.external_link.as_str()),
-    )
-    .len();
+    let unique_links_count: usize = links_by_domain.values().map(|urls| urls.len()).sum();
 
     log::info!(
         "Checking {} external link(s). Skipping {} external link(s).{}",
@@ -198,18 +213,13 @@ pub fn check_external_links(site: &Site) -> Vec<String> {
         }
     );
 
-    if checked_links.is_empty() {
-        return Vec::new();
-    }
-
     // error out if we're in error mode and any external URLs couldn't be parsed
     if site.config.link_checker.external_level == LinkCheckerLevel::Error && !messages.is_empty() {
         return messages;
     }
 
-    let mut links_by_domain: HashMap<&str, Vec<&LinkDef>> = HashMap::new();
-    for link in checked_links.iter() {
-        links_by_domain.entry(link.domain.as_str()).or_default().push(link);
+    if links_by_domain.is_empty() {
+        return messages;
     }
 
     let cpu_count = match thread::available_parallelism() {
@@ -225,46 +235,31 @@ pub fn check_external_links(site: &Site) -> Vec<String> {
             let errors = pool.install(|| {
                 links_by_domain
                     .par_iter()
-                    .map(|(_, links)| {
-                        let mut num_links_left = links.len();
-                        let mut checked_links: HashMap<&str, Option<link_checker::Result>> =
-                            HashMap::new();
-                        links
-                            .iter()
-                            .filter_map(move |link_def| {
-                                num_links_left -= 1;
-
-                                // Avoid double-checking the same url (e.g. for translated pages).
-                                let external_link = link_def.external_link.as_str();
-                                if let Some(optional_res) = checked_links.get(external_link) {
-                                    if let Some(res) = optional_res {
-                                        return Some((
-                                            &link_def.file_path,
-                                            external_link,
-                                            res.clone(),
-                                        ));
-                                    }
-                                    return None;
-                                }
+                    .map(|(_, urls)| {
+                        let mut num_urls_left = urls.len();
+                        urls.iter()
+                            .filter_map(move |(&external_link, referring_pages)| {
+                                num_urls_left -= 1;
 
                                 let res = link_checker::check_url(
                                     external_link,
                                     &site.config.link_checker,
                                 );
 
-                                if num_links_left > 0 {
+                                if num_urls_left > 0 {
                                     // Prevent rate-limiting, wait before next crawl unless we're done with this domain
                                     thread::sleep(time::Duration::from_millis(500));
                                 }
 
                                 if link_checker::is_valid(&res) {
-                                    checked_links.insert(external_link, None);
                                     None
                                 } else {
-                                    checked_links.insert(external_link, Some(res.clone()));
-                                    Some((&link_def.file_path, external_link, res))
+                                    Some(referring_pages.iter().map(move |file_path| {
+                                        (*file_path, external_link, res.clone())
+                                    }))
                                 }
                             })
+                            .flatten()
                             .collect::<Vec<_>>()
                     })
                     .flatten()
