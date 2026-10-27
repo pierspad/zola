@@ -907,3 +907,69 @@ fn preserve_color_profile() {
     check_icc_data_preserved("display_p3.png", "png");
     check_icc_data_preserved("display_p3.png", "webp");
 }
+
+#[test]
+fn batch_resize_multiple_sizes_single_source() {
+    let source_path = TEST_IMGS.join("jpg.jpg");
+    let tmpdir = tempfile::tempdir().unwrap().keep();
+    let config = Config::parse(CONFIG).unwrap();
+    let mut proc = Processor::new(tmpdir.clone(), &config);
+
+    let targets = [(100, 100), (150, 150), (200, 200), (250, 250)];
+    let mut responses = Vec::new();
+    for &(w, h) in &targets {
+        let resize_op = ResizeOperation::from_args("scale", Some(w), Some(h)).unwrap();
+        let resp = proc
+            .enqueue(
+                resize_op,
+                format!("jpg_{w}_{h}.jpg"),
+                source_path.clone(),
+                "jpg",
+                None,
+                None,
+                "lanczos3",
+            )
+            .unwrap();
+        responses.push((resp, w, h));
+    }
+
+    proc.do_process().unwrap();
+
+    for (resp, expect_w, expect_h) in responses {
+        let processed_path = PathBuf::from(&resp.static_path);
+        let processed_size = imageproc::read_image_metadata(tmpdir.join(processed_path))
+            .map(|meta| (meta.width, meta.height))
+            .unwrap();
+        assert_eq!(processed_size, (expect_w, expect_h));
+    }
+}
+
+#[test]
+fn image_metadata_cache_invalidation_on_change() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    let test_file = tmpdir.path().join("dynamic_test.svg");
+
+    // Write initial SVG (100x100)
+    std::fs::write(
+        &test_file,
+        r#"<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"></svg>"#,
+    )
+    .unwrap();
+    let meta1 = imageproc::read_image_metadata(&test_file).unwrap();
+    assert_eq!(meta1.width, 100);
+    assert_eq!(meta1.height, 100);
+
+    // Read again - should hit cache
+    let meta2 = imageproc::read_image_metadata(&test_file).unwrap();
+    assert_eq!(meta2, meta1);
+
+    // Overwrite SVG with new dimensions (250x180)
+    std::fs::write(
+        &test_file,
+        r#"<svg width="250" height="180" xmlns="http://www.w3.org/2000/svg"></svg>"#,
+    )
+    .unwrap();
+    let meta3 = imageproc::read_image_metadata(&test_file).unwrap();
+    assert_eq!(meta3.width, 250);
+    assert_eq!(meta3.height, 180);
+}

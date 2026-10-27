@@ -1,4 +1,5 @@
 use fs_err as fs;
+use std::fs::Permissions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -37,36 +38,36 @@ pub struct ImageOp {
     ignore: bool,
 }
 
-impl ImageOp {
-    fn perform(&self) -> Result<()> {
-        if self.ignore {
-            return Ok(());
-        }
+struct DecodedImage {
+    img: DynamicImage,
+    color_profile: Option<Vec<u8>>,
+    permissions: Permissions,
+}
 
-        log::debug!("processing {} with instructions {:?}", self.input_path.display(), self.instr);
-        let input_permissions = fs::metadata(&self.input_path)?.permissions();
-        let reader =
-            ImageReader::open(&self.input_path).and_then(ImageReader::with_guessed_format)?;
+impl DecodedImage {
+    fn load(input_path: &Path) -> Result<Self> {
+        let permissions = fs::metadata(input_path)?.permissions();
+        let reader = ImageReader::open(input_path).and_then(ImageReader::with_guessed_format)?;
         let mut decoder = reader.into_decoder()?;
         let color_profile = decoder.icc_profile().ok().flatten();
         let metadata = decoder.exif_metadata()?.and_then(|raw_metadata| {
             exif::Reader::new()
                 .read_raw(raw_metadata)
                 .inspect_err(|e| {
-                    log::warn!("Failed to parse exif for {}: {}", self.input_path.display(), e)
+                    log::warn!("Failed to parse exif for {}: {}", input_path.display(), e)
                 })
                 .ok()
         });
         let img = DynamicImage::from_decoder(decoder)?;
 
-        let mut img = if let Some(metadata) = metadata.as_ref() {
+        let img = if let Some(metadata) = metadata.as_ref() {
             match fix_orientation(&img, metadata) {
                 Ok(Some(fixed_img)) => fixed_img,
                 Ok(None) => img,
                 Err(e) => {
                     log::debug!(
                         "Using default orientation for {}: could not read exif orientation: {}",
-                        self.input_path.display(),
+                        input_path.display(),
                         e
                     );
                     img
@@ -75,29 +76,57 @@ impl ImageOp {
         } else {
             log::debug!(
                 "No exif orientation data for {}, using default orientation",
-                self.input_path.display(),
+                input_path.display(),
             );
             img
         };
 
-        let img = match self.instr.crop_instruction {
-            Some((x, y, w, h)) => img.crop(x, y, w, h),
-            None => img,
+        Ok(Self { img, color_profile, permissions })
+    }
+}
+
+impl ImageOp {
+    #[allow(dead_code)]
+    fn perform(&self) -> Result<()> {
+        if self.ignore {
+            return Ok(());
+        }
+        let decoded = DecodedImage::load(&self.input_path)?;
+        self.perform_with_decoded(&decoded)
+    }
+
+    fn perform_with_decoded(&self, decoded: &DecodedImage) -> Result<()> {
+        if self.ignore {
+            return Ok(());
+        }
+
+        log::debug!("processing {} with instructions {:?}", self.input_path.display(), self.instr);
+
+        let cropped: DynamicImage;
+        let img: &DynamicImage = match self.instr.crop_instruction {
+            Some((x, y, w, h)) => {
+                cropped = decoded.img.crop_imm(x, y, w, h);
+                &cropped
+            }
+            None => &decoded.img,
         };
-        let img = match self.instr.resize_instruction {
+
+        let resized: DynamicImage;
+        let img: &DynamicImage = match self.instr.resize_instruction {
             Some((w, h)) => {
-                let mut resized = DynamicImage::new(w, h, img.color());
+                let mut r = DynamicImage::new(w, h, img.color());
                 fast_image_resize::Resizer::new()
                     .resize(
-                        &img,
-                        &mut resized,
+                        img,
+                        &mut r,
                         &fast_image_resize::ResizeOptions::new()
                             .resize_alg(crate::filter::fir_resize_alg_from_filter(self.filter)),
                     )
                     .with_context(|| {
                         format!("Failed to resize image: {}", self.input_path.display())
                     })?;
-                resized
+                resized = r;
+                &resized
             }
             None => img,
         };
@@ -111,10 +140,10 @@ impl ImageOp {
         }?;
         let mut tmp_output_writer = BufWriter::new(&tmp_output_file);
 
-        let has_color_profile = color_profile.is_some();
+        let has_color_profile = decoded.color_profile.is_some();
         let add_color_profile = |encoder: &mut dyn ImageEncoder| {
-            if let Some(color_profile) = color_profile {
-                let _ = encoder.set_icc_profile(color_profile).inspect_err(|_| log::warn!("processing {}: Image encoder for {} does not support color profiles, colors may be incorrect.", self.input_path.display(), self.format.extension()));
+            if let Some(color_profile) = decoded.color_profile.as_ref() {
+                let _ = encoder.set_icc_profile(color_profile.clone()).inspect_err(|_| log::warn!("processing {}: Image encoder for {} does not support color profiles, colors may be incorrect.", self.input_path.display(), self.format.extension()));
             }
         };
 
@@ -127,7 +156,7 @@ impl ImageOp {
             Format::Jpeg { quality } => {
                 let mut encoder = JpegEncoder::new_with_quality(&mut tmp_output_writer, quality);
                 add_color_profile(&mut encoder);
-                encoder.encode_image(&img)?;
+                encoder.encode_image(img)?;
             }
             Format::WebP { quality } => {
                 // use the `image` builtin encoder for lossless, as it supports color profiles
@@ -142,7 +171,7 @@ impl ImageOp {
                             self.input_path.display()
                         );
                     }
-                    let encoder = webp::Encoder::from_image(&img)
+                    let encoder = webp::Encoder::from_image(img)
                         .map_err(|_| anyhow!("Unable to load this kind of image with webp"))?;
                     let memory = match quality {
                         Some(q) => encoder.encode(q as f32),
@@ -159,7 +188,7 @@ impl ImageOp {
             }
         };
 
-        fs::set_permissions(&tmp_output_file, input_permissions)?;
+        fs::set_permissions(&tmp_output_file, decoded.permissions.clone())?;
         fs::rename(&tmp_output_file, &self.output_path)?;
 
         Ok(())
@@ -276,12 +305,27 @@ impl Processor {
             ufs::create_directory(&self.output_dir)?;
         }
 
-        self.img_ops
-            .par_iter()
-            .map(|op| {
-                op.perform().with_context(|| {
-                    format!("Failed to process image: {}", op.input_path.display())
-                })
+        let mut ops_by_input: HashMap<&Path, Vec<&ImageOp>> = HashMap::default();
+        for op in &self.img_ops {
+            if !op.ignore {
+                ops_by_input.entry(&op.input_path).or_default().push(op);
+            }
+        }
+
+        ops_by_input
+            .into_par_iter()
+            .map(|(input_path, ops)| {
+                let decoded = DecodedImage::load(input_path).with_context(|| {
+                    format!("Failed to process image: {}", input_path.display())
+                })?;
+
+                ops.into_par_iter()
+                    .map(|op| {
+                        op.perform_with_decoded(&decoded).with_context(|| {
+                            format!("Failed to process image: {}", op.input_path.display())
+                        })
+                    })
+                    .collect::<Result<()>>()
             })
             .collect::<Result<()>>()
     }
