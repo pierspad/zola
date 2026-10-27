@@ -1026,7 +1026,6 @@ title = "A title"
     }
 
     #[test]
-<<<<<<< HEAD
     fn get_hash_minifies_asset_when_enabled() {
         let dir = tempdir().unwrap();
         create_file(&dir.path().join("style.css"), "body {\n    color: red;\n}").unwrap();
@@ -1047,7 +1046,9 @@ title = "A title"
         let min_bytes = b"body{color:red}";
         let expected_hash = compute_hash::<sha2::Sha384>(min_bytes, true);
         assert_eq!(hash_minified, expected_hash);
-=======
+    }
+
+    #[test]
     fn repeated_calls_use_cache_without_filesystem_lookup() {
         let dir = create_temp_dir();
         let app_css = dir.path().join("app.css");
@@ -1069,7 +1070,7 @@ title = "A title"
         let url1 = get_url.call(kwargs.clone(), &State::new(&ctx)).unwrap();
         assert_eq!(url1, "http://a-website.com/app.css?h=572e691dc68c3fcd653a");
 
-        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new());
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, PathBuf::new(), false);
         let hash_kwargs = Kwargs::from([
             ("path", tera::Value::from("app.css")),
             ("sha_type", tera::Value::from(256)),
@@ -1087,6 +1088,5 @@ title = "A title"
 
         let hash2 = get_hash.call(hash_kwargs, &State::new(&ctx)).unwrap();
         assert_eq!(hash2, hash1);
->>>>>>> perf/cache-file-lookup-and-streaming-hash
     }
 }

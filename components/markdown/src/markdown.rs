@@ -332,6 +332,8 @@ pub struct State<'a> {
     external_links: Vec<String>,
     /// Errors collected during rendering. Combined into one error at the end.
     errors: Vec<Error>,
+    /// Number of images processed in this document.
+    image_count: usize,
 }
 
 impl<'a> State<'a> {
@@ -547,6 +549,9 @@ impl<'a> State<'a> {
     }
 
     fn end_image(&mut self, ctx: &MarkdownContext) {
+        let is_first_image = self.image_count == 0;
+        self.image_count += 1;
+
         let img = self.image.take().unwrap();
         let alt = escape_html_string(&img.alt_text());
         let src = escape_href_string(&img.url);
@@ -560,7 +565,11 @@ impl<'a> State<'a> {
             None => String::new(),
         };
         let lazy_attr = if ctx.config.markdown.lazy_async_image {
-            r#" loading="lazy" decoding="async""#
+            if is_first_image {
+                r#" decoding="async""#
+            } else {
+                r#" loading="lazy" decoding="async""#
+            }
         } else {
             ""
         };

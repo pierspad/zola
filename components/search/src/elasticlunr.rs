@@ -300,7 +300,7 @@ mod tests {
             taxonomies: None,
         };
 
-        let res = fill_index(&config.search, item);
+        let res = fill_index(&config.search, &item);
         assert_eq!(res.len(), 3);
         assert_eq!(res[0], title.unwrap());
         assert_eq!(res[1], "Intro Deep dive Outro");
@@ -330,7 +330,7 @@ mod tests {
             taxonomies: Some(&taxonomies),
         };
 
-        let res = fill_index(&config.search, item);
+        let res = fill_index(&config.search, &item);
         assert_eq!(res.len(), 3);
         assert_eq!(res[0], title.unwrap());
         assert_eq!(res[1], "Rust Search Zola");
