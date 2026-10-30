@@ -15,14 +15,17 @@ from quality_metrics import encoded_bytes, encoder_versions
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pages', type=int, default=100)
+    parser.add_argument('--personal-root', required=True, type=Path, help='Checkout containing actual static/search.js and prepush dictionary generator')
     parser.add_argument('--work', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if args.pages < 5:
         parser.error('--pages must be >=5')
-    repo = Path(__file__).resolve().parents[2]
+    repo = args.personal_root.resolve()
     generator = repo/'prepush-scripts/02-generate-search-dicts.py'
     frontend = repo/'static/search.js'
+    if not generator.is_file() or not frontend.is_file():
+        parser.error('--personal-root must contain actual frontend and dictionary generator')
     spec = importlib.util.spec_from_file_location('personal_dictionary_generator', generator)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

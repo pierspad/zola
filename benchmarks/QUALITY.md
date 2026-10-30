@@ -79,11 +79,14 @@ adapter is executable local code and should be reviewed like the benchmark itsel
 ## Personal frontend operational check
 
 ```sh
-python3 benchmarks/personal_search_suite.py --pages 100 --work benchmarks/work/personal-search-100 --output benchmarks/results/personal-search-100.json
+python3 benchmarks/personal_search_suite.py --personal-root .. --pages 100 --work benchmarks/work/personal-search-100 --output benchmarks/results/personal-search-100.json
 python3 -m unittest discover -s benchmarks -p 'test_personal_search.py'
 ```
 
-Use a new work directory each time. This imports the actual personal site's
+Use a new work directory each time. `--personal-root` explicitly identifies the
+checkout containing the real frontend and generator. A standalone Zola checkout
+does not contain these personal-site sources: its integration test explicitly
+skips, and the extended driver records unsupported search unless a root is supplied. This imports the actual personal site's
 `prepush-scripts/02-generate-search-dicts.py` against isolated Markdown fixtures and
 executes shipped `static/search.js` inside Node VM. A minimal DOM and fetch stub
 supply the generated dictionary; the adapter exports the real closure's search
@@ -100,9 +103,25 @@ process, not an isolated search allocation.
 ## Long runs
 
 ```sh
-python3 benchmarks/extended_suite.py --output benchmarks/results/extended.json --quality
-python3 benchmarks/extended_suite.py --long --cases 50000x1,100000x1 --timeout 600 --output benchmarks/results/capacity.json --quality
+python3 benchmarks/extended_suite.py --output benchmarks/results/extended.json --quality --personal-root ..
+python3 benchmarks/extended_suite.py --long --cases 50000x1,100000x1 --timeout 600 --output benchmarks/results/capacity.json --quality --personal-root ..
 ```
+
+For a correctness-only end-to-end check with the existing frozen executable:
+
+```sh
+python3 benchmarks/extended_suite.py --quick --quality --personal-root .. --binary target/release/zola --fork-build-metadata benchmarks/results/fork-build-memory-final.json --output benchmarks/results/extended-quick-e2e.json
+```
+
+`--quick` selects 8x1 and 24x2 newspaper cells, one sample, no warmups. These are
+correctness checks, not release timing baselines. The explicit attestation prevents
+rebuilding the fork. The actual personal search uses 100 documents for quick checks
+and 10,000 otherwise; its scope remains separate from the synthetic Fuse index.
+Missing adapters produce `partial`, and detected quality failures produce
+`failed_quality` with a nonzero exit status even when engine correctness passes.
+Existing synthetic templates lack canonical metadata on many outputs; equal
+upstream/fork findings are baseline template gaps, not engine regressions. Review
+the recorded per-case evidence rather than interpreting this as a ranking score.
 
 The extended driver uses the existing matrix rather than duplicating engine timing
 logic. It records preflight evidence, skips insufficient RAM/disk explicitly, saves

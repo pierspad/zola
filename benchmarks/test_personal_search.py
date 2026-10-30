@@ -7,14 +7,17 @@ import tempfile
 import unittest
 
 
-@unittest.skipUnless(shutil.which('node'), 'actual frontend search requires Node')
+PERSONAL_ROOT = Path(__file__).resolve().parents[2]
+
+
+@unittest.skipUnless(shutil.which('node') and (PERSONAL_ROOT/'static/search.js').is_file() and (PERSONAL_ROOT/'prepush-scripts/02-generate-search-dicts.py').is_file(), 'actual frontend search requires Node and an explicit personal checkout; standalone fork has no personal frontend')
 class PersonalSearchTests(unittest.TestCase):
     def test_actual_frontend_and_dictionary_generator(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             report = root/'report.json'
             subprocess.run([sys.executable, str(Path(__file__).with_name('personal_search_suite.py')),
-                            '--pages', '100', '--work', str(root/'fixture'), '--output', str(report)], check=True)
+                            '--personal-root', str(PERSONAL_ROOT), '--pages', '100', '--work', str(root/'fixture'), '--output', str(report)], check=True)
             result = json.loads(report.read_text())
             self.assertEqual(result['status'], 'pass')
             self.assertEqual(len(result['samples']), 6)
