@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import shutil
+import quality_metrics
 from quality_metrics import MAX_SITEMAP_BYTES, Document, delivery, local_path, sitemap_check, technical_seo
 
 
@@ -45,6 +48,16 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(result['raw_bytes'], sum(p.stat().st_size for p in root.iterdir()))
             self.assertEqual(result['missing_dependencies'], ['missing.woff'])
             self.assertEqual(result['external_dependencies'], ['https://cdn/x.js'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node Brotli fallback unavailable')
+    def test_actual_node_brotli_fallback(self):
+        with patch.object(quality_metrics, 'brotli', None), patch.object(quality_metrics, 'NODE_BROTLI', shutil.which('node')):
+            result = quality_metrics.encoded_bytes(b'repeated bytes ' * 100)
+            self.assertGreater(result['brotli_bytes'], 0)
+            self.assertLess(result['brotli_bytes'], result['raw_bytes'])
+            quality_metrics.encoder_versions.cache_clear()
+            self.assertIn('node', quality_metrics.encoder_versions()['brotli'])
+        quality_metrics.encoder_versions.cache_clear()
 
     def test_seo_reciprocity_json_and_fragments(self):
         with tempfile.TemporaryDirectory() as folder:

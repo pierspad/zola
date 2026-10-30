@@ -6,11 +6,40 @@ from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
+import platform
+import zlib
+import shutil
+import subprocess
+from functools import lru_cache
+try:
+    import brotli
+except ImportError:
+    brotli = None
+NODE_BROTLI = shutil.which("node") if brotli is None else None
 from urllib.parse import unquote, urljoin, urlsplit
 import xml.etree.ElementTree as ET
 
 MAX_SITEMAP_BYTES = 50 * 1024 * 1024
 MAX_SITEMAP_URLS = 50_000
+
+
+def encoded_bytes(data):
+    result = {'raw_bytes': len(data), 'gzip_bytes': len(gzip.compress(data, mtime=0))}
+    if brotli is not None:
+        result['brotli_bytes'] = len(brotli.compress(data, quality=5))
+    elif NODE_BROTLI:
+        script = 'const z=require("node:zlib");let chunks=[];process.stdin.on("data",x=>chunks.push(x));process.stdin.on("end",()=>process.stdout.write(z.brotliCompressSync(Buffer.concat(chunks),{params:{[z.constants.BROTLI_PARAM_QUALITY]:5}})));'
+        result['brotli_bytes'] = len(subprocess.run([NODE_BROTLI, '-e', script], input=data, capture_output=True, check=True, timeout=30).stdout)
+    return result
+
+
+@lru_cache(maxsize=1)
+def encoder_versions():
+    brotli_info = {'version': brotli.__version__, 'quality': 5} if brotli is not None else {'status': 'unsupported: encoder unavailable'}
+    if NODE_BROTLI:
+        versions = json.loads(subprocess.run([NODE_BROTLI, '-p', 'JSON.stringify(process.versions)'], capture_output=True, text=True, check=True, timeout=10).stdout)
+        brotli_info = {'node': versions['node'], 'version': versions.get('brotli'), 'quality': 5}
+    return {'gzip': {'python': platform.python_version(), 'zlib': zlib.ZLIB_RUNTIME_VERSION, 'level': 9, 'mtime': 0}, 'brotli': brotli_info}
 
 
 class Document(HTMLParser):
@@ -46,6 +75,8 @@ class Document(HTMLParser):
                 self.resources.append(a.get('href', ''))
         if tag == 'a' and 'href' in a:
             self.links.append(a['href'])
+            if 'hreflang' in a:
+                self.alternates.append((a['hreflang'], a['href']))
         if tag in ('img', 'script', 'source', 'video', 'audio', 'iframe'):
             if 'src' in a:
                 self.resources.append(a['src'])
@@ -182,7 +213,7 @@ def technical_seo(root, base_url):
             target = local_path(root, base_url, link, base_url)
             if target is None or not target.exists():
                 problem(robots, 'robots sitemap unavailable: ' + link)
-    return {'status': 'fail' if errors else 'pass', 'errors': errors, 'html_count': len(documents),
+    return {'attribution': 'Static generated-output findings; compare identical source templates/upstream before attributing an engine regression.', 'status': 'fail' if errors else 'pass', 'errors': errors, 'html_count': len(documents),
             'missing_title_or_description': missing_metadata, 'metadata_status': 'missing' if missing_metadata else 'present',
             'jsonld_documents': sum(bool(d.jsonld) for d in documents.values()),
             'robots_status': 'present' if robots.exists() else 'absent', 'robots_sitemap_references': robots_refs,
@@ -200,8 +231,7 @@ def delivery(root, page, base_url):
         if path in seen:
             continue
         data = path.read_bytes()
-        seen[path] = {'path': str(path.relative_to(root)), 'raw_bytes': len(data),
-                      'gzip_bytes': len(gzip.compress(data, mtime=0))}
+        seen[path] = {'path': str(path.relative_to(root)), **encoded_bytes(data)}
         url = urljoin(base_url.rstrip('/') + '/', str(path.relative_to(root)))
         refs = []
         if path.suffix == '.html':
@@ -225,7 +255,9 @@ def delivery(root, page, base_url):
             'cache_assumption': 'cold visit, unique local URLs; repeat shared resources assumed cached only when explicitly subtracted',
             'potential_local_requests': len(resources), 'raw_bytes': sum(r['raw_bytes'] for r in resources),
             'gzip_bytes': sum(r['gzip_bytes'] for r in resources), 'gzip_policy': 'all files individually encoded, Python gzip level 9, mtime=0; server may choose differently',
-            'brotli_status': 'unsupported: no encoder invoked', 'external_dependencies': sorted(external),
+            'brotli_status': 'measured' if brotli is not None or NODE_BROTLI else 'unsupported: optional encoder unavailable',
+            'brotli_bytes': sum(r['brotli_bytes'] for r in resources) if brotli is not None or NODE_BROTLI else None,
+            'encoder_versions': encoder_versions(), 'external_dependencies': sorted(external),
             'missing_dependencies': sorted(missing), 'resources': resources}
 
 

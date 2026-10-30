@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from quality_metrics import encoded_bytes, encoder_versions
 
 
 def main():
@@ -55,7 +56,7 @@ def main():
     spec_path.write_text(json.dumps(specification, ensure_ascii=False, indent=2))
     process = subprocess.run(['node', str(Path(__file__).with_name('search_probe.mjs')), str(spec_path)], capture_output=True, text=True, timeout=120)
     report = json.loads(process.stdout) if process.returncode == 0 else {'status': 'fail', 'stderr': process.stderr}
-    report.update({'pages': args.pages, 'fixture': 'actual personal dictionary generator; multilingual text in supported it dictionary, no locale stemming claim',
+    report.update({'search_activation_index_download': {**encoded_bytes(index.read_bytes()), 'encoder_versions': encoder_versions(), 'policy': 'dictionary fetch on search initialization; separate from initial document dependency graph; no browser transfer measured'}, 'pages': args.pages, 'fixture': 'actual personal dictionary generator; multilingual text in supported it dictionary, no locale stemming claim',
                    'generator_sha256': hashlib.sha256(generator.read_bytes()).hexdigest(), 'specification': str(spec_path)})
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
