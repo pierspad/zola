@@ -341,7 +341,22 @@ impl<'a> Queue<'a> {
     }
 
     fn render_page(&'a self, page: &'a Page) -> Result<RenderedOutput> {
-        let content = self.renderer().render_page(page)?;
+        let key = self.site.incremental.as_ref().and_then(|cache| cache.html_key(self.site, page));
+        let cached = self
+            .site
+            .incremental
+            .as_ref()
+            .zip(key.as_ref())
+            .and_then(|(cache, key)| cache.html(key));
+        let content = if let Some(content) = cached {
+            content
+        } else {
+            let content = self.renderer().render_page(page)?;
+            if let (Some(cache), Some(key)) = (&self.site.incremental, key) {
+                cache.insert_html(key, content.clone());
+            }
+            content
+        };
         let path = PathBuf::from(&page.path).join("index.html");
         Ok(RenderedOutput { path, content, kind: OutputKind::Html })
     }

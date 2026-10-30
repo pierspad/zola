@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use gh_emoji::Replacer as EmojiReplacer;
@@ -108,6 +108,10 @@ pub struct Rendered {
     pub internal_links: Vec<(String, Option<String>)>,
     /// Outgoing links to external webpages (i.e. HTTP(S) targets).
     pub external_links: Vec<String>,
+    /// Permalink inputs used while resolving links, including asset owners.
+    pub permalink_dependencies: Vec<(String, Option<String>)>,
+    /// Files consulted for image dimensions, including unsuccessful fallbacks.
+    pub image_dependencies: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -129,7 +133,15 @@ fn read_valid_dimensions(path: &Path) -> Option<(u32, u32)> {
     None
 }
 
-fn get_image_dimensions(dest_url: &str, ctx: &MarkdownContext) -> Option<(u32, u32)> {
+fn get_image_dimensions(
+    dest_url: &str,
+    ctx: &MarkdownContext,
+    dependencies: &mut Vec<PathBuf>,
+) -> Option<(u32, u32)> {
+    let mut read = |path: &Path| {
+        dependencies.push(path.to_path_buf());
+        read_valid_dimensions(path)
+    };
     if is_external_link(dest_url) || dest_url.starts_with("//") || dest_url.starts_with("data:") {
         return None;
     }
@@ -146,24 +158,24 @@ fn get_image_dimensions(dest_url: &str, ctx: &MarkdownContext) -> Option<(u32, u
                     Some(parent) => base.join("content").join(parent).join(rel),
                     None => base.join("content").join(rel),
                 };
-                read_valid_dimensions(&path)
+                read(&path)
             } else {
-                read_valid_dimensions(&base.join("content").join(stripped))
+                read(&base.join("content").join(stripped))
             }
         } else if let Some((_, rel)) = ctx.colocated_assets.get(stripped) {
-            ctx.current_dir.and_then(|d| read_valid_dimensions(&d.join(rel)))
+            ctx.current_dir.and_then(|d| read(&d.join(rel)))
         } else {
             None
         }
     } else if let Some(rel) = decoded_path.strip_prefix('/') {
         let base = ctx.base_path?;
-        read_valid_dimensions(&base.join("static").join(rel)).or_else(|| {
+        read(&base.join("static").join(rel)).or_else(|| {
             let theme = ctx.config.theme.as_deref()?;
-            read_valid_dimensions(&base.join("themes").join(theme).join("static").join(rel))
+            read(&base.join("themes").join(theme).join("static").join(rel))
         })
     } else if let Some(current_dir) = ctx.current_dir {
         let clean_path = decoded_path.strip_prefix("./").unwrap_or(decoded_path);
-        read_valid_dimensions(&current_dir.join(clean_path))
+        read(&current_dir.join(clean_path))
     } else {
         None
     }
@@ -330,6 +342,8 @@ pub struct State<'a> {
     internal_links: Vec<(String, Option<String>)>,
     /// External links for validation.
     external_links: Vec<String>,
+    permalink_dependencies: Vec<(String, Option<String>)>,
+    image_dependencies: Vec<PathBuf>,
     /// Errors collected during rendering. Combined into one error at the end.
     errors: Vec<Error>,
     /// Number of images processed in this document.
@@ -468,6 +482,15 @@ impl<'a> State<'a> {
         }
 
         let result = if link.starts_with("@/") {
+            let raw = link.strip_prefix("@/").unwrap().split(['?', '#']).next().unwrap_or("");
+            let decoded = percent_encoding::percent_decode_str(raw).decode_utf8_lossy();
+            let dependency = ctx
+                .colocated_assets
+                .get(decoded.as_ref())
+                .map(|(owner, _)| owner.as_str())
+                .unwrap_or(raw);
+            self.permalink_dependencies
+                .push((dependency.to_owned(), ctx.permalinks.get(dependency).cloned()));
             if let Some(url) = resolve_colocated_asset(link, ctx) {
                 url
             } else {
@@ -624,7 +647,8 @@ impl<'a> State<'a> {
 
             // Images
             Event::Start(Tag::Image { link_type, dest_url, title, .. }) => {
-                let dimensions = get_image_dimensions(dest_url.as_ref(), ctx);
+                let dimensions =
+                    get_image_dimensions(dest_url.as_ref(), ctx, &mut self.image_dependencies);
                 let url = match self.fix_link(ctx, link_type, dest_url.as_ref()) {
                     Ok(url) => url,
                     Err(e) => {
@@ -789,6 +813,8 @@ impl<'a> State<'a> {
             toc: make_table_of_contents(self.toc),
             internal_links: self.internal_links,
             external_links: self.external_links,
+            permalink_dependencies: self.permalink_dependencies,
+            image_dependencies: self.image_dependencies,
         })
     }
 }

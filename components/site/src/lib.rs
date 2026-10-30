@@ -1,5 +1,6 @@
 pub mod feeds;
 pub mod git;
+mod incremental;
 pub mod link_checking;
 mod md_render;
 mod minify;
@@ -77,6 +78,8 @@ pub struct Site {
     build_mode: BuildMode,
     /// Whether to check external links
     check_external_links: bool,
+    incremental: Option<incremental::MarkdownCache>,
+    config_dir: PathBuf,
 }
 
 impl Site {
@@ -120,9 +123,32 @@ impl Site {
             cache: Arc::new(RenderCache::default()),
             build_mode: BuildMode::Disk,
             check_external_links: true,
+            incremental: None,
+            config_dir: path.join(config_file).parent().unwrap().to_path_buf(),
         };
 
         Ok(site)
+    }
+
+    /// Enable the persistent, conservative Markdown cache for disk builds.
+    pub fn enable_incremental(&mut self) -> Result<()> {
+        self.enable_incremental_with_memory_limit(usize::MAX)
+    }
+
+    /// Limit estimated persistent-cache retention in bytes, independently of site memory.
+    pub fn enable_incremental_with_memory_limit(&mut self, bytes: usize) -> Result<()> {
+        if bytes == 0 {
+            self.incremental = None;
+            return Ok(());
+        }
+        self.incremental = Some(incremental::MarkdownCache::open(self, &self.config_dir, bytes)?);
+        Ok(())
+    }
+
+    pub fn save_incremental(&self) {
+        if let Some(cache) = &self.incremental {
+            cache.save();
+        }
     }
 
     /// Enable some `zola serve` related options
@@ -508,6 +534,13 @@ impl Site {
             .par_iter_mut()
             .map(|page| {
                 let insert_anchor = pages_insert_anchors[&page.file.path];
+                let key =
+                    self.incremental.as_ref().and_then(|cache| cache.key(page, insert_anchor));
+                if let (Some(cache), Some(key)) = (&self.incremental, &key) {
+                    if cache.restore(key, page, permalinks) {
+                        return Ok(());
+                    }
+                }
                 md_render::render_page(
                     page,
                     renderer.clone(),
@@ -517,7 +550,11 @@ impl Site {
                     config,
                     insert_anchor,
                     &self.base_path,
-                )
+                )?;
+                if let (Some(cache), Some(key)) = (&self.incremental, key) {
+                    cache.insert(key, page, permalinks);
+                }
+                Ok(())
             })
             .collect::<Result<()>>()?;
 
@@ -737,7 +774,36 @@ impl Site {
     pub fn process_images(&self) -> Result<()> {
         let mut imageproc =
             self.imageproc.lock().expect("Couldn't lock imageproc (process_images)");
+        // Static files were already copied to public. Track only files owned by
+        // the image processor so pruning cannot remove theme or unrelated assets.
+        let processed = self.static_path.join(imageproc::RESIZED_SUBDIR);
+        let previous = if processed.exists() {
+            fs::read_dir(&processed)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         imageproc.prune()?;
+        for path in previous {
+            if path.exists() {
+                continue;
+            }
+            let relative = path.strip_prefix(&self.static_path)?;
+            let output = self.output_path.join(relative);
+            if output.is_file() {
+                fs::remove_file(&output)?;
+            }
+            // A theme file shadowed by the stale generated image becomes visible
+            // again, just as it does in a fresh build.
+            if let Some(theme) = &self.config.theme {
+                let theme_file =
+                    self.base_path.join("themes").join(theme).join("static").join(relative);
+                if theme_file.is_file() {
+                    copy_file_if_needed(&theme_file, &output, false)?;
+                }
+            }
+        }
         imageproc.do_process()
     }
 

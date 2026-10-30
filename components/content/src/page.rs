@@ -75,6 +75,10 @@ pub struct Page {
     pub internal_links: Vec<(String, Option<String>)>,
     /// The list of all links to external webpages. They can be validated by the `link_checker`.
     pub external_links: Vec<String>,
+    /// Inputs used by Markdown link resolution, for persistent cache validation.
+    pub permalink_dependencies: Vec<(String, Option<String>)>,
+    /// Files consulted by Markdown image dimension lookup.
+    pub image_dependencies: Vec<PathBuf>,
     /// For each asset: (asset path -> (language-less md path, relative path from md file)
     pub colocated_assets: AHashMap<String, (String, String)>,
     /// Computed visibility

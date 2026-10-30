@@ -112,6 +112,8 @@ pub fn render_page(
     page.toc = res.toc;
     page.internal_links = res.internal_links;
     page.external_links = res.external_links;
+    page.permalink_dependencies = res.permalink_dependencies;
+    page.image_dependencies = res.image_dependencies;
 
     if page.lang != config.default_language
         && let Some(stem) = page.file.relative.strip_suffix(&format!(".{}.md", page.lang))
