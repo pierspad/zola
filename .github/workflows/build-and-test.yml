@@ -53,5 +53,28 @@ jobs:
       - name: Cargo test
         run: cargo test --all
 
+      - name: Release workload correctness smoke
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 benchmarks/release_suite.py --binary target/debug/zola --runs 2 --add-runs 2 --build-arg=--incremental --mutations --mutation-build-arg=--incremental --output benchmarks/results/ci-smoke.json
+
+      - name: Benchmark accounting and release comparison checks
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 -m unittest discover -s benchmarks -p 'test_*.py'
+
+      - name: Attest the debug fork smoke binary
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 benchmarks/fork_build.py --profile dev --output benchmarks/results/ci-fork-build.json
+
+      - name: Official upstream comparison smoke
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 benchmarks/matrix.py --binary target/debug/zola --fork-build-metadata benchmarks/results/ci-fork-build.json --cases 8x1,24x2 --profiles newspaper --small-runs 1 --large-runs 1 --warmups 0 --reserve-gib 2 --output benchmarks/results/ci-upstream.json
+
+      - name: Preserve benchmark evidence
+        if: always() && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-evidence
+          path: benchmarks/results/
+
       - name: Build the zola docs
         run: cd docs && cargo run -- build

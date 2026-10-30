@@ -1,0 +1,4 @@
+# Generated fixtures, caches, output trees and measurement artifacts stay here.
+/work/*
+/results/*
+__pycache__/

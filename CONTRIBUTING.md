@@ -37,3 +37,8 @@ If all the interactions feels like talking to a LLM, you're getting banned too.
 
 LLM usage is not accepted for the documentation, no one wants to read LLM generated documentation. No one
 wants to read LLM comments either so use your own words in issues/PR.
+
+## Fork release regression and performance checks
+
+See [the release suite guide](benchmarks/README.md) for reproducible CLI
+workloads, output comparisons and release timing baselines.

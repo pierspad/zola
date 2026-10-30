@@ -34,3 +34,6 @@ shell.nix
 /result
 flake.nix
 flake.lock
+
+# Persistent opt-in build cache
+.zola-cache/
