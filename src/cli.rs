@@ -55,6 +55,14 @@ pub enum Command {
         #[clap(long)]
         drafts: bool,
 
+        /// Reuse safely cached Markdown from previous builds
+        #[clap(long)]
+        incremental: bool,
+
+        /// Estimated incremental-cache memory allowance in MiB (0 disables reuse)
+        #[clap(long, requires = "incremental")]
+        cache_memory_limit: Option<usize>,
+
         /// Minify generated HTML files
         #[clap(long)]
         minify: bool,

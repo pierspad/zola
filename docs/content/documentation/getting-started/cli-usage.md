@@ -65,6 +65,49 @@ $ zola --root /path/to/project build
 
 By default, drafts are not loaded. If you wish to include them, pass the `--drafts` flag.
 
+### Persistent incremental builds
+
+Use `zola build --incremental --cache-memory-limit 512` to allow an estimated
+512 MiB for retained rendering-cache entries (`2048` means 2 GiB). Omit the option
+for unrestricted cache retention. `0` runs the normal renderer and leaves an
+existing cache untouched. The option requires `--incremental`.
+
+The allowance covers loaded and newly retained entries using a conservative
+estimate of eight times their serialized size plus map overhead. Cache files too
+large for the allowance are skipped before decoding; entries that do not fit
+are rendered normally and omitted from the next cache. This can reduce reuse,
+without changing the generated site. Cache reads and writes stream JSON.
+This is a cache allowance, not a total-process RAM limit: site metadata, search,
+rendering, templates and temporary allocations also consume memory.
+
+`zola build --incremental` stores reusable rendering results in `.zola-cache/`
+inside the project. The first run fills the cache; later runs can reuse unchanged
+Markdown and page HTML. Add `.zola-cache/` to your site's `.gitignore`. Removing
+that directory safely resets the cache. Ordinary `zola build` does not use it.
+Set `RUST_LOG=info` to see the numbers of reused Markdown and page HTML renders.
+The `.zola-cache/` directory is reserved: do not select it, or an ancestor
+containing it, as the output directory when using `--incremental`.
+
+This is conservative rendering reuse, not a constant-time build: Zola still loads
+all content, validates links, rebuilds sections, taxonomies, feeds, search and
+sitemaps, and recreates the output directory. Deleted and renamed outputs therefore
+disappear as in a clean build. Source assets, template changes, rendering options
+and the executable itself invalidate cached work. Cache writes happen only after
+a successful build; unreadable or malformed cache files are ignored.
+
+Content with Tera expressions or shortcodes, template-backed heading anchors,
+HTML comments/summary markers and unresolved internal links is rendered normally.
+Files consulted for Markdown image dimensions are tracked by their actual paths
+and contents, including missing files and fallback lookups. Page HTML is reused only
+for a small pure template subset: context expressions, control flow, known pure
+filters, and static template inheritance/includes. Function calls (including
+`resize_image`, `get_page`, `get_section`, and `load_data`), components, custom
+filters/tests and uncertain template syntax run normally. This preserves image
+processing and other rendering effects. Neighbours, translations, backlinks and
+config values participate in page HTML keys. Gains depend on the site's content
+and template workload; cache hashing, loading and writing can outweigh savings
+on small or mostly uncacheable sites.
+
 ## serve
 
 This will build and serve the site using a local server. You can also specify
@@ -149,3 +192,20 @@ Zola can provide detailed logging about its behavior via the `RUST_LOG` variable
 - To disable all log output entirely, set `RUST_LOG=off`.
 
 See the [env_logger documentation](https://docs.rs/env_logger/0.11.8/env_logger/#enabling-logging) for a full reference on `RUST_LOG`.
+
+### Automatic cache allowance
+
+Run `python3 scripts/build_with_cache.py --binary target/release/zola` from
+this repository (or supply an absolute binary path from a site directory).
+The wrapper always enables incremental content builds. It chooses the smallest
+of one quarter of physical RAM, half of available RAM, and half of remaining
+ancestor cgroup memory, in MiB. Unknown measurements are omitted; if all are
+unknown the allowance is 256 MiB. Linux checks host memory and cgroup v1/v2;
+Windows checks physical memory; macOS currently checks total physical memory
+only. This estimates retained cache memory, not total process RSS.
+
+Override with `--cache-memory-limit MIB` or `ZOLA_CACHE_MEMORY_LIMIT_MIB`;
+zero disables cache reuse. Pass build options after `--`. The wrapper logs its
+measurements and replaces itself with Zola, preserving exit status and signals.
+Plain `zola build` continues to perform a full build. Benchmark full-build
+oracles must call the binary directly.

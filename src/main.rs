@@ -121,7 +121,15 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Command::Build { base_url, output_dir, force, drafts, minify } => {
+        Command::Build {
+            base_url,
+            output_dir,
+            force,
+            drafts,
+            minify,
+            incremental,
+            cache_memory_limit,
+        } => {
             log::info!("Building site...");
             let start = Instant::now();
             let (root_dir, config_file) = get_config_file_path(&cli_dir, cli.config.as_deref());
@@ -133,6 +141,8 @@ fn main() {
                 force,
                 drafts,
                 minify,
+                incremental,
+                cache_memory_limit,
             ) {
                 Ok(()) => messages::report_elapsed_time(start),
                 Err(e) => {

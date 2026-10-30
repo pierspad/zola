@@ -13,6 +13,8 @@ pub fn build(
     force: bool,
     include_drafts: bool,
     minify: bool,
+    incremental: bool,
+    cache_memory_limit: Option<usize>,
 ) -> Result<()> {
     let mut site = Site::new(root_dir, config_file)?;
     if let Some(output_dir) = output_dir {
@@ -34,8 +36,19 @@ pub fn build(
     if minify {
         site.minify();
     }
+    if incremental {
+        let bytes = cache_memory_limit
+            .map(|mib| {
+                mib.checked_mul(1024 * 1024)
+                    .ok_or_else(|| Error::msg("Cache memory limit is too large"))
+            })
+            .transpose()?;
+        site.enable_incremental_with_memory_limit(bytes.unwrap_or(usize::MAX))?;
+    }
     site.load()?;
     messages::notify_site_size(&site);
     messages::warn_about_ignored_pages(&site);
-    site.build()
+    site.build()?;
+    site.save_incremental();
+    Ok(())
 }
