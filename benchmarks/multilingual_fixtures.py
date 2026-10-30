@@ -1,7 +1,7 @@
 """Synthetic Unicode corpus; language labels identify scripts, not real translations."""
 from fixtures import generate, page_text, write
 
-VERSION = 1
+VERSION = 2
 LANGUAGES = (
     ('en', 'Café naïve façade résumé', False),
     ('it', 'Città perché più già', False),
@@ -57,7 +57,7 @@ def generate_multilingual(root, articles, count, profile="stress", feed_limit=50
         for i in range(articles):
             article(root, i, lang, marker, summary=profile == "newspaper")
     base = root / 'templates/base.html'
-    text = base.read_text().replace('<html lang="en">', '<html lang="{{ lang }}" dir="{% if lang == "ar" or lang == "he" %}rtl{% else %}ltr{% endif %}">')
+    text = base.read_text().replace('<html lang="en" dir="ltr">', '<html lang="{{ lang }}" dir="{% if lang == "ar" or lang == "he" %}rtl{% else %}ltr{% endif %}">')
     text = text.replace('<main>', '''<nav class="translations">{% if page is defined %}{% for translation in page.translations %}<a hreflang="{{ translation.lang }}" href="{{ translation.permalink }}">{{ translation.lang }}</a>{% endfor %}{% endif %}</nav><main>''')
     text = text.replace('href="/"', 'href="{{ get_url(path="/", lang=lang) }}"')
     for path in ('articles', 'tags', 'categories'):

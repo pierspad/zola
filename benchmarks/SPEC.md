@@ -21,7 +21,9 @@ from site generation and is reported only when measured, with Cargo cache state;
 an already cached build is not a cold compilation measurement. There is no WASM
 result unless an actual WASM artifact was built and measured.
 
-Use common-search-v2 fixtures and pinned official upstream. Existing narrow, exact
+Use common-search-v2 fixtures and pinned official upstream. Multilingual fixture
+version 2 / base workload 3 adds SEO metadata to the shared templates; older
+fixture measurements are not a comparable performance baseline. Existing narrow, exact
 image-attribute and fixture asset-minification differences may be classified; every
 unknown output difference fails equivalence. Earlier performance samples cannot be
 relabelled as newly measured quality results without matching fixture provenance.

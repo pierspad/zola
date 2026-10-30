@@ -119,9 +119,14 @@ rebuilding the fork. The actual personal search uses 100 documents for quick che
 and 10,000 otherwise; its scope remains separate from the synthetic Fuse index.
 Missing adapters produce `partial`, and detected quality failures produce
 `failed_quality` with a nonzero exit status even when engine correctness passes.
-Existing synthetic templates lack canonical metadata on many outputs; equal
-upstream/fork findings are baseline template gaps, not engine regressions. Review
-the recorded per-case evidence rather than interpreting this as a ranking score.
+Version 2 multilingual fixtures (base workload 3) provide canonical, language,
+direction and description metadata, including a 404 and pagination redirect
+template. Redirect canonicals identify their own first-page alias document; the
+refresh destination remains the real listing. This workload has no arbitrary
+content aliases. Older fixture performance and SEO reports remain historical and
+are not comparable to this revised template workload. Search still remains
+unsupported for synthetic fixtures. Review per-case findings without treating
+them as a ranking score.
 
 The extended driver uses the existing matrix rather than duplicating engine timing
 logic. It records preflight evidence, skips insufficient RAM/disk explicitly, saves
