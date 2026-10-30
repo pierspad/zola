@@ -147,16 +147,26 @@ def technical_seo(root, base_url):
     errors, missing_metadata, canonicals = [], [], {}
     def problem(path, message):
         errors.append({'path': str(path.relative_to(root)), 'message': message})
+    # These caches live only for this immutable output inspection. Every document
+    # is still parsed and every link/alternate is still checked.
+    @lru_cache(maxsize=None)
     def page_url(path):
         relative = str(path.relative_to(root))
         return urljoin(base_url.rstrip('/') + '/', relative[:-10] if relative.endswith('index.html') else relative)
+    @lru_cache(maxsize=None)
+    def resolve(reference, url):
+        return local_path(root, base_url, reference, url)
+    alternate_sets = {
+        path: {resolve(href, page_url(path)) for _, href in doc.alternates}
+        for path, doc in documents.items()
+    }
     valid_redirects = {}
     for path, doc in documents.items():
         if not doc.refreshes:
             continue
         match = re.fullmatch(r'\s*0\s*;\s*url\s*=\s*(.+?)\s*', doc.refreshes[0], re.I) if len(doc.refreshes) == 1 else None
         target_url = urljoin(page_url(path), match[1].strip('\"\'')) if match else None
-        target = local_path(root, base_url, target_url, page_url(path)) if target_url else None
+        target = resolve(target_url, page_url(path)) if target_url else None
         peer = documents.get(target)
         if (peer is None or peer.refreshes or target == path or
                 doc.canonicals != [target_url] or peer.canonicals != [target_url] or
@@ -170,7 +180,7 @@ def technical_seo(root, base_url):
             problem(path, 'missing language or invalid direction')
         if doc.lang and doc.lang.split('-')[0] in ('ar', 'he', 'fa', 'ur') and doc.direction != 'rtl':
             problem(path, 'RTL language lacks rtl direction')
-        alternate_targets = {local_path(root, base_url, href, url) for _, href in doc.alternates}
+        alternate_targets = alternate_sets[path]
         if doc.alternates and path not in alternate_targets:
             problem(path, 'hreflang missing self membership')
         if len(doc.canonicals) != 1 or not urlsplit(doc.canonicals[0]).netloc:
@@ -191,21 +201,21 @@ def technical_seo(root, base_url):
             except ValueError:
                 problem(path, 'invalid JSON-LD syntax')
         for link in doc.links:
-            target = local_path(root, base_url, link, url)
+            target = resolve(link, url)
             if target is not None:
                 if not target.exists():
                     problem(path, 'broken local link: ' + link)
                 elif urlsplit(link).fragment and target in documents and unquote(urlsplit(link).fragment) not in documents[target].ids:
                     problem(path, 'missing local fragment: ' + link)
         for lang, link in doc.alternates:
-            target = local_path(root, base_url, link, url)
+            target = resolve(link, url)
             if target not in documents:
                 problem(path, 'hreflang target unavailable: ' + link)
             else:
                 peer = documents[target]
                 if lang != 'x-default' and peer.lang != lang:
                     problem(path, 'hreflang language mismatch: ' + link)
-                peer_targets = {local_path(root, base_url, href, page_url(target)) for _, href in peer.alternates}
+                peer_targets = alternate_sets[target]
                 if path not in peer_targets:
                     problem(path, 'hreflang missing reciprocal membership: ' + link)
                 if peer_targets != alternate_targets:
@@ -220,7 +230,7 @@ def technical_seo(root, base_url):
         for issue in result['errors']:
             problem(path, issue)
         for link in result['urls'] + result['indexes']:
-            target = local_path(root, base_url, link, page_url(path))
+            target = resolve(link, page_url(path))
             if target is None or not target.exists():
                 problem(path, 'sitemap target unavailable: ' + link)
     robots = root / 'robots.txt'
@@ -228,7 +238,7 @@ def technical_seo(root, base_url):
     if robots.exists():
         robots_refs = re.findall(r'^Sitemap:\s*(\S+)', robots.read_text(), re.I | re.M)
         for link in robots_refs:
-            target = local_path(root, base_url, link, base_url)
+            target = resolve(link, base_url)
             if target is None or not target.exists():
                 problem(robots, 'robots sitemap unavailable: ' + link)
     return {'attribution': 'Static generated-output findings; compare identical source templates/upstream before attributing an engine regression.', 'status': 'fail' if errors else 'pass', 'errors': errors, 'html_count': len(documents),

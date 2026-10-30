@@ -9,6 +9,35 @@ from quality_metrics import MAX_SITEMAP_BYTES, Document, delivery, local_path, s
 
 
 class MetricsTests(unittest.TestCase):
+    def test_multilingual_checks_preserve_findings_and_inspection_cache_lifetime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            langs = ('en', 'it', 'ar')
+            def write_language(code, broken=False):
+                path = root/f'{code}/index.html'
+                path.parent.mkdir(exist_ok=True)
+                links = ''.join(f'<link rel="alternate" hreflang="{lang}" href="https://x/{lang}/">' for lang in langs if not (broken and lang == 'en'))
+                path.write_text(f'<html lang="{code}" dir="{"rtl" if code == "ar" else "ltr"}"><title>{code}</title><meta name="description" content="{code}"><link rel="canonical" href="https://x/{code}/">{links}')
+            for code in langs:
+                write_language(code)
+            with patch.object(quality_metrics, 'local_path', wraps=local_path) as resolver:
+                good = technical_seo(root, 'https://x/')
+            self.assertEqual(good['errors'], [])
+            # Each alternate is resolved once per source document, including
+            # reuse by the reciprocal check; not once for every peer's set.
+            self.assertEqual(resolver.call_count, len(langs)**2)
+            write_language('it', broken=True)
+            bad = technical_seo(root, 'https://x/')
+            findings = {(e['path'], e['message']) for e in bad['errors']}
+            self.assertEqual(findings, {
+                ('en/index.html', 'hreflang missing reciprocal membership: https://x/it/'),
+                ('en/index.html', 'hreflang alternate membership differs: https://x/it/'),
+                ('it/index.html', 'hreflang alternate membership differs: https://x/ar/'),
+                ('ar/index.html', 'hreflang alternate membership differs: https://x/it/'),
+            })
+            write_language('it')
+            self.assertEqual(technical_seo(root, 'https://x/')['errors'], [])
+
     def test_redirect_destination_canonical_and_genuine_duplicate(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
