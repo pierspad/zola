@@ -238,6 +238,23 @@ def run_case(spec, args, binary, env):
             result['coverage']['search_bytes'] = sum(p.stat().st_size for p in (root/'public').glob('search_index.*'))
             result['cache_bytes'] = tree_bytes(root/'.zola-cache')
             result['output_manifest_sha256'] = digest(expected)
+            if args.quality:
+                from quality_suite import inspect_case
+                base_url = re.search(r'^base_url\s*=\s*"([^"]+)"', (root/'config.toml').read_text(), re.MULTILINE).group(1)
+                pages = ['index.html', 'articles/page-00000/index.html']
+                for lang, _, _ in languages:
+                    if lang in ('ar', 'zh', 'ja', 'ko'):
+                        candidate = f'{lang}/articles/page-00000/index.html'
+                        if (root/'public'/candidate).is_file():
+                            pages.append(candidate)
+                result['quality'] = {}
+                for label, site_root, engine in [('fork-full-and-incremental-identical-output', root, binary), ('upstream', upstream_root, args.upstream_binary)]:
+                    if site_root:
+                        evidence = inspect_case({'label': label, 'output_root': str(site_root/'public'), 'base_url': base_url, 'pages': pages, 'binary': str(engine)})
+                        evidence['scope'] = 'Whole-output technical SEO and sitemap; representative homepage and English/available Arabic/CJK article delivery. Search requires a verified frontend adapter.'
+                        evidence['fixture_context'] = 'Existing versioned synthetic templates; missing SEO metadata is a template baseline gap, not evidence of an engine regression.'
+                        result['quality'][label] = evidence
+                result['quality_status'] = 'fail' if any(item['status'] == 'fail' for item in result['quality'].values()) else 'partial'
             # Independent fresh full oracles. Preserve mismatches, including stale thumbnails.
             if articles*count <= args.mutation_max_pages:
                 article(root, articles, 'en', LANGUAGES[0][1], summary=profile == 'newspaper')
@@ -342,6 +359,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true', help='Prepare and attest both engines without running samples')
     parser.add_argument('--offline', action='store_true', help='Explicitly use previously pinned official checkout; report it stale')
     parser.add_argument('--upstream-binary', type=Path)
+    parser.add_argument('--quality', action='store_true', help='Inspect SEO and representative delivery outside timed samples; search needs an adapter')
     parser.add_argument('--compat-search', action='store_true', help='Disable fork search extensions in identical inputs for both engines')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cases', default='100x1,1000x1,10000x1,1000x15', help='articles x locales, comma separated')

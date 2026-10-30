@@ -76,5 +76,8 @@ jobs:
           name: benchmark-evidence
           path: benchmarks/results/
 
-      - name: Build the zola docs
-        run: cd docs && cargo run -- build
+      - name: Test automatic cache sizing
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Build the zola docs with detected cache allowance
+        run: cd docs && python3 ../scripts/build_with_cache.py --binary ../target/debug/zola
