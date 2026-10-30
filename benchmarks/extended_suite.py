@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--rss-gib', type=float, default=3)
     parser.add_argument('--reserve-gib', type=float, default=8)
     parser.add_argument('--disk-gib', type=float, default=8)
+    parser.add_argument('--mutation-max-pages', type=int, default=15000, help='Explicit fresh mutation oracle page budget forwarded to matrix')
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
@@ -58,7 +59,8 @@ def main():
     matrix_output = args.output.with_name(args.output.stem + '-matrix.json')
     command = [sys.executable, str(Path(__file__).with_name('matrix.py')), '--binary', str(args.binary),
                '--cases', cases, '--output', str(matrix_output), '--rss-gib', str(args.rss_gib),
-               '--reserve-gib', str(args.reserve_gib), '--disk-gib', str(args.disk_gib), '--timeout', str(args.timeout)]
+               '--reserve-gib', str(args.reserve_gib), '--disk-gib', str(args.disk_gib), '--timeout', str(args.timeout),
+               '--mutation-max-pages', str(args.mutation_max_pages)]
     if args.fork_build_metadata:
         command += ['--fork-build-metadata', str(args.fork_build_metadata)]
     if args.quick:
