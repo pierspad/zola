@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from matrix import BuildFailure, WORK, build
 
 
@@ -30,6 +31,20 @@ class ResourceAccountingTests(unittest.TestCase):
         self.assertLess(sample['peak_rss_bytes'], 80*1024**2)
         self.assertGreater(sample['outer_wrapper_wait4_peak_rss_bytes_not_engine'], 150*1024**2)
         self.assertGreaterEqual(sample['seconds'], .02)
+
+    def test_exiting_proc_status_race_keeps_wait4_evidence(self):
+        original = Path.read_text
+        raced = []
+        def read(path, *args, **kwargs):
+            if str(path).startswith('/proc/') and path.name == 'status' and not raced:
+                raced.append(True)
+                raise ProcessLookupError(3, 'No such process')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', read):
+            sample = self.child('import time\ntime.sleep(.03)\n')
+        self.assertTrue(raced)
+        self.assertEqual(sample['exit_code'], 0)
+        self.assertIsNotNone(sample['peak_rss_bytes'])
 
     def test_nonzero_engine_is_failed_measurement(self):
         with self.assertRaises(BuildFailure) as failure:

@@ -110,7 +110,7 @@ def build(binary, root, env, incremental, args):
                     engine_pid = process.pid
                 fields = Path(f'/proc/{engine_pid}/status').read_text().splitlines()
                 rss = next(int(line.split()[1])*1024 for line in fields if line.startswith('VmRSS:'))
-            except (FileNotFoundError, StopIteration):
+            except (FileNotFoundError, ProcessLookupError, StopIteration):
                 rss = 0
             observed_rss_peak = max(observed_rss_peak, rss)
             if elapsed > args.timeout:
@@ -252,7 +252,7 @@ def run_case(spec, args, binary, env):
                     if site_root:
                         evidence = inspect_case({'label': label, 'output_root': str(site_root/'public'), 'base_url': base_url, 'pages': pages, 'binary': str(engine)})
                         evidence['scope'] = 'Whole-output technical SEO and sitemap; representative homepage and English/available Arabic/CJK article delivery. Search requires a verified frontend adapter.'
-                        evidence['fixture_context'] = 'Existing versioned synthetic templates; missing SEO metadata is a template baseline gap, not evidence of an engine regression.'
+                        evidence['fixture_context'] = 'Version 2 multilingual / workload 3 shared synthetic templates include SEO metadata; compare identical upstream and fork findings before engine attribution.'
                         result['quality'][label] = evidence
                 result['quality_status'] = 'fail' if any(item['status'] == 'fail' for item in result['quality'].values()) else 'partial'
             # Independent fresh full oracles. Preserve mismatches, including stale thumbnails.
