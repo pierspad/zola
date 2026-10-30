@@ -252,7 +252,7 @@ def run_case(spec, args, binary, env):
                     if site_root:
                         evidence = inspect_case({'label': label, 'output_root': str(site_root/'public'), 'base_url': base_url, 'pages': pages, 'binary': str(engine)})
                         evidence['scope'] = 'Whole-output technical SEO and sitemap; representative homepage and English/available Arabic/CJK article delivery. Search requires a verified frontend adapter.'
-                        evidence['fixture_context'] = 'Version 2 multilingual / workload 3 shared synthetic templates include SEO metadata; compare identical upstream and fork findings before engine attribution.'
+                        evidence['fixture_context'] = 'Version 3 multilingual / workload 4 shared synthetic templates include SEO metadata; compare identical upstream and fork findings before engine attribution.'
                         result['quality'][label] = evidence
                 result['quality_status'] = 'fail' if any(item['status'] == 'fail' for item in result['quality'].values()) else 'partial'
             # Independent fresh full oracles. Preserve mismatches, including stale thumbnails.

@@ -49,6 +49,7 @@ class Document(HTMLParser):
         self.canonicals, self.alternates, self.links, self.resources = [], [], [], []
         self.ids, self.duplicates, self.descriptions, self.jsonld = set(), [], [], []
         self.title = ''
+        self.refreshes = []
         self._title = self._json = False
         self._jsontext = ''
         self.feed(text)
@@ -65,6 +66,8 @@ class Document(HTMLParser):
             self._title = True
         if tag == 'meta' and a.get('name', '').lower() == 'description':
             self.descriptions.append(a.get('content', ''))
+        if tag == 'meta' and a.get('http-equiv', '').lower() == 'refresh':
+            self.refreshes.append(a.get('content', ''))
         if tag == 'link':
             rel = a.get('rel', '').split()
             if 'canonical' in rel:
@@ -147,6 +150,20 @@ def technical_seo(root, base_url):
     def page_url(path):
         relative = str(path.relative_to(root))
         return urljoin(base_url.rstrip('/') + '/', relative[:-10] if relative.endswith('index.html') else relative)
+    valid_redirects = {}
+    for path, doc in documents.items():
+        if not doc.refreshes:
+            continue
+        match = re.fullmatch(r'\s*0\s*;\s*url\s*=\s*(.+?)\s*', doc.refreshes[0], re.I) if len(doc.refreshes) == 1 else None
+        target_url = urljoin(page_url(path), match[1].strip('\"\'')) if match else None
+        target = local_path(root, base_url, target_url, page_url(path)) if target_url else None
+        peer = documents.get(target)
+        if (peer is None or peer.refreshes or target == path or
+                doc.canonicals != [target_url] or peer.canonicals != [target_url] or
+                target_url != page_url(target)):
+            problem(path, 'invalid redirect: expected one immediate local refresh and matching destination canonical')
+        else:
+            valid_redirects[path] = target_url
     for path, doc in documents.items():
         url = page_url(path)
         if not doc.lang or doc.direction not in ('ltr', 'rtl', 'auto'):
@@ -160,9 +177,10 @@ def technical_seo(root, base_url):
             problem(path, 'expected one absolute canonical')
         else:
             canonical = doc.canonicals[0]
-            if canonical in canonicals:
+            if path not in valid_redirects and canonical in canonicals:
                 problem(path, 'canonical reused by ' + str(canonicals[canonical].relative_to(root)))
-            canonicals[canonical] = path
+            if path not in valid_redirects:
+                canonicals[canonical] = path
         if not doc.title.strip() or not any(doc.descriptions):
             missing_metadata.append(str(path.relative_to(root)))
         for duplicate in doc.duplicates:
@@ -214,6 +232,7 @@ def technical_seo(root, base_url):
             if target is None or not target.exists():
                 problem(robots, 'robots sitemap unavailable: ' + link)
     return {'attribution': 'Static generated-output findings; compare identical source templates/upstream before attributing an engine regression.', 'status': 'fail' if errors else 'pass', 'errors': errors, 'html_count': len(documents),
+            'validated_redirects': {str(path.relative_to(root)): target for path, target in valid_redirects.items()},
             'missing_title_or_description': missing_metadata, 'metadata_status': 'missing' if missing_metadata else 'present',
             'jsonld_documents': sum(bool(d.jsonld) for d in documents.values()),
             'robots_status': 'present' if robots.exists() else 'absent', 'robots_sitemap_references': robots_refs,

@@ -9,6 +9,52 @@ from quality_metrics import MAX_SITEMAP_BYTES, Document, delivery, local_path, s
 
 
 class MetricsTests(unittest.TestCase):
+    def test_redirect_destination_canonical_and_genuine_duplicate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            normal = '<html lang="en"><title>Listing</title><meta name="description" content="Listing"><link rel="canonical" href="https://x/">'
+            (root/'index.html').write_text(normal)
+            alias = root/'page/1/index.html'
+            alias.parent.mkdir(parents=True)
+            alias.write_text(normal + '<meta http-equiv="refresh" content="0; url=https://x/">')
+            result = technical_seo(root, 'https://x/')
+            self.assertEqual(result['errors'], [])
+            self.assertEqual(result['validated_redirects'], {'page/1/index.html': 'https://x/'})
+            (root/'duplicate.html').write_text(normal)
+            result = technical_seo(root, 'https://x/')
+            self.assertTrue(any('canonical reused' in e['message'] for e in result['errors']))
+
+    def test_redirect_exemption_rejects_unsafe_or_inconsistent_targets(self):
+        cases = [
+            ('0; url=https://x/', 'https://x/page/1/', ''),
+            ('0; url=https://other/', 'https://other/', ''),
+            ('0; url=https://x/missing/', 'https://x/missing/', ''),
+            ('3; url=https://x/', 'https://x/', ''),
+            ('broken', 'https://x/', ''),
+            ('0; url=https://x/', 'https://x/', '<meta http-equiv="refresh" content="0; url=https://x/">'),
+            ('0; url=https://x/page/1/', 'https://x/page/1/', ''),
+        ]
+        for refresh, canonical, extra in cases:
+            with self.subTest(refresh=refresh, canonical=canonical, extra=extra), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root/'index.html').write_text('<html lang="en"><title>Listing</title><link rel="canonical" href="https://x/">')
+                alias = root/'page/1/index.html'
+                alias.parent.mkdir(parents=True)
+                alias.write_text(f'<html lang="en"><title>Alias</title><link rel="canonical" href="{canonical}"><meta http-equiv="refresh" content="{refresh}">{extra}')
+                result = technical_seo(root, 'https://x/')
+                self.assertFalse(result['validated_redirects'])
+                self.assertTrue(any('invalid redirect' in e['message'] for e in result['errors']))
+
+    def test_redirect_chains_do_not_receive_canonical_exemption(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root/'index.html').write_text('<html lang="en"><title>Home</title><link rel="canonical" href="https://x/">')
+            (root/'first.html').write_text('<html lang="en"><title>First</title><link rel="canonical" href="https://x/"><meta http-equiv="refresh" content="0; url=https://x/">')
+            (root/'second.html').write_text('<html lang="en"><title>Second</title><link rel="canonical" href="https://x/first.html"><meta http-equiv="refresh" content="0; url=https://x/first.html">')
+            result = technical_seo(root, 'https://x/')
+            self.assertEqual(result['validated_redirects'], {'first.html': 'https://x/'})
+            self.assertTrue(any(e['path'] == 'second.html' and 'invalid redirect' in e['message'] for e in result['errors']))
+
     def test_sitemap_boundaries(self):
         def sitemap(n):
             return ('<urlset>' + ''.join(f'<url><loc>https://x/{i}</loc></url>' for i in range(n)) + '</urlset>').encode()

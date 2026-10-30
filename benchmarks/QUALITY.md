@@ -119,10 +119,11 @@ rebuilding the fork. The actual personal search uses 100 documents for quick che
 and 10,000 otherwise; its scope remains separate from the synthetic Fuse index.
 Missing adapters produce `partial`, and detected quality failures produce
 `failed_quality` with a nonzero exit status even when engine correctness passes.
-Version 2 multilingual fixtures (base workload 3) provide canonical, language,
+Version 3 multilingual fixtures (base workload 4) provide canonical, language,
 direction and description metadata, including a 404 and pagination redirect
-template. Redirect canonicals identify their own first-page alias document; the
-refresh destination remains the real listing. This workload has no arbitrary
+template. Redirect canonicals match the real listing refresh destination. The quality
+checker exempts canonical reuse only after validating one immediate local
+refresh to an existing, non-redirect, self-canonical destination. This workload has no arbitrary
 content aliases. Older fixture performance and SEO reports remain historical and
 are not comparable to this revised template workload. Search still remains
 unsupported for synthetic fixtures. Review per-case findings without treating

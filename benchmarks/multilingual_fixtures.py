@@ -1,7 +1,7 @@
 """Synthetic Unicode corpus; language labels identify scripts, not real translations."""
 from fixtures import generate, page_text, write
 
-VERSION = 2
+VERSION = 3
 LANGUAGES = (
     ('en', 'Café naïve façade résumé', False),
     ('it', 'Città perché più già', False),
