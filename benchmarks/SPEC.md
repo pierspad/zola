@@ -69,7 +69,8 @@ measurements are not real Internet performance. Do not fabricate Lighthouse resu
 The common matrix covers 100, 1,000, 10,000, multilingual 15,000 (1,000 × 15), and
 25,000 pages. 50,000/100,000-page runs require explicit long-run opt-in. Preserve
 upstream comparisons and baseline history. Reuse existing matrix output rather than
-unnecessarily repeating its 135 samples. A short verification suite exercises metric
+unnecessarily repeating its 114 measured samples (four small cells × three modes × five repeats plus
+six larger cells × three modes × three repeats). A short verification suite exercises metric
 logic and small generated output. Long orchestration checks available RAM/cgroup
 headroom, free disk, timeout and maximum RSS before and during engine work. Skips,
 quality failures and resource aborts remain visible, with raw logs; never silently

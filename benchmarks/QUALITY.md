@@ -148,3 +148,72 @@ capacity claim. Do not run memory-intensive suites alongside engine measurements
 Long runs still compare pinned upstream and both fork modes; quality sidecars are
 required for each retained output. Binary compilation remains separate and cached
 Cargo timing must not be labeled cold compilation.
+
+## Completed fixture-v3 baseline, 2026-11-02
+
+The corrected full run completed with exit code 0: ten cells (stress and newspaper
+at 100, 1,000, 10,000, 1,000 × 15 locales and 25,000 articles), 114 measured
+engine samples, two warmups per mode, and no resource abort. Earlier references to
+135 samples were an arithmetic error: four small cells × three modes × five
+repeats plus six larger cells × three modes × three repeats equals 114.
+
+All ten official/fork comparisons passed the narrow documented difference policy;
+fork full/incremental outputs matched exactly. All twenty output inspections
+(official and fork for each cell) passed technical SEO with zero errors, and all
+56 representative delivery inspections had zero missing dependencies. The
+multilingual cells inspected 18,316 HTML files per engine, validating 240 local
+pagination redirects each. The 25,000-article cells inspected 30,022 HTML files
+per engine. Quality remains **partial** because synthetic Fuse frontend search
+has no verified adapter; it is not reported as passed.
+
+The fresh mutation budget was explicitly 25,000 pages. All 22 selected scenarios
+produced 44 byte-exact comparisons against fresh full-build oracles, with none
+skipped. The four small cells exercise add/edit/delete/rename; the six larger
+cells exercise deletion only. This budget does not establish broad mutation
+coverage at 25,000 pages.
+
+Newspaper wall medians in seconds and maximum observed engine RSS in MiB:
+
+| Articles/locales | Official s / MiB | Fork full s / MiB | Fork incremental s / MiB |
+| --- | ---: | ---: | ---: |
+| 100 / 1 | 0.155 / 72.3 | 0.143 / 74.2 | 0.162 / 75.8 |
+| 1,000 / 1 | 0.795 / 117.6 | 0.617 / 119.8 | 0.498 / 134.0 |
+| 10,000 / 1 | 8.770 / 573.8 | 6.051 / 570.2 | 4.472 / 707.7 |
+| 1,000 / 15 | 9.701 / 931.8 | 10.155 / 921.2 | 7.494 / 1,149.9 |
+| 25,000 / 1 | 22.286 / 1,298.7 | 15.363 / 1,297.5 | 11.243 / 1,625.4 |
+
+These are shared-host observations, with unrelated test workers and desktop
+processes active. Performance attribution remains provisional; no whole-suite
+rerun was performed. In particular, multilingual newspaper full builds were
+about 4.7% slower than official upstream, and tiny incremental builds were slower
+than full builds. Incremental memory was higher in every cell. The maximum timed
+engine RSS across both profiles was 2,592,018,432 bytes (2,471.9 MiB), at 25,000
+stress incremental, below the 3 GiB watchdog. Content-cache accounting budgets
+are not hard process RSS limits. Raw MAD/ranges, CPU and cold-build metrics remain
+in the matrix report; the Python orchestration's 2,809.8 seconds are not engine
+time or cold compilation time.
+
+The actual personal site's shipped search frontend passed all six deterministic
+oracles over 10,000 generated entries in Node v26.12.1. Median query times were
+10.76–11.70 ms and p95 11.67–12.84 ms; whole Node process peak RSS was
+81,436,672 bytes. The activation dictionary was 1,957,788 raw / 87,122 gzip /
+32,299 Brotli bytes. These are Node/runtime and static encoding measurements,
+not browser UX, network transfer or LCP. No 50,000/100,000-page capacity claim is
+made. All 29 benchmark unit/integration tests passed after the run.
+
+The release executable was frozen from clean fork commit
+`42a6586e2f65523f779d058fb96a78169f23d3ab`, using the recorded release profile
+(LTO, one codegen unit, stripping). Fork binary SHA-256:
+`d2a648f5baa237de26bfa5cf130cbc73ce550ad2390f99ff09f39b78cb082e75`.
+Official upstream refreshed to `628926f8ea5d68d9430ee242289ce1a33794dbd2`,
+with binary SHA-256
+`d0bee1ddea6a4689cf5e0c1fda1860fd9429f99aec51309438d273abd2bc8ad8`.
+Older fixture-v2 partial reports remain superseded and incomparable.
+
+Locally retained evidence (ignored benchmark artifacts):
+
+- `benchmarks/results/extended-baseline-fixture-v3.json` and adjacent `.log`
+- `benchmarks/results/extended-baseline-fixture-v3-matrix.json` and `.md`
+- `benchmarks/results/extended-baseline-fixture-v3-personal-search.json`
+- `benchmarks/results/extended-baseline-fixture-v3-host-noise.json`
+- `benchmarks/results/fork-build-fixture-v3.json`
