@@ -103,6 +103,7 @@ def mutations(root, articles, languages, binary, env, args, checkpoint):
                        'changed_from_previous_output_count': len(affected),
                        'candidate': candidate_sample, 'oracle': oracle_sample,
                        'oracle_manifest_sha256': digest(expected)})
+        print(f"mutation {scenario}: equal={not changed}, affected={len(affected)}", flush=True)
         checkpoint(result)
         previous_output = candidate
         if changed:
@@ -204,6 +205,9 @@ def main():
                     save()
             report['summary'] = {name: summary(samples[1:]) for name,samples in report['samples'].items()}
             report['status'] = 'upstream_differences_require_review' if changed else 'passed'
+            if not report['production_full_incremental_exact'] or not report['compatible_full_incremental_exact'] or any(
+                    not sample.get('exact_output_equal', True) for samples in report['samples'].values() for sample in samples):
+                report['status'] = 'correctness_failure'
             save()
             return
         languages = generate_multilingual(root, args.articles, args.languages, 'newspaper', 50)
@@ -225,6 +229,7 @@ def main():
             expected = {}
             for name, (binary, site, incremental) in modes.items():
                 report['population'][name] = build(binary, site, env, incremental, args)
+                print(f"population {name}: {report['population'][name]['seconds']:.3f}s", flush=True)
                 expected[name] = manifest(site/'public')
                 save()
             report['fork_full_incremental_exact'] = expected['full'] == expected['incremental']
@@ -256,6 +261,7 @@ def main():
                     sample['noise_gate_passed'] = sample['noise']['external_cpu_cores'] <= args.external_cores
                     sample['exact_output_equal'] = manifest(site/'public') == expected[name]
                     report['samples'][name].append(sample)
+                    print(f"cycle {cycle+1} {name}: {sample['seconds']:.3f}s, external={sample['noise']['external_cpu_cores']:.2f} cores", flush=True)
                     save()
             report['summary'] = {name: summary(samples) for name,samples in report['samples'].items()}
             report['noise_gate'] = {'max_external_cores': args.external_cores,
