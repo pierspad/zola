@@ -33,7 +33,7 @@ def main():
     parser.add_argument('--cases', help='Defaults to common matrix or tiny cells with --quick')
     parser.add_argument('--quick', action='store_true', help='Correctness-only 8x1/24x2, newspaper, one sample/no warmup')
     parser.add_argument('--fork-build-metadata', type=Path, help='Explicit frozen binary attestation avoids rebuilding Cargo')
-    parser.add_argument('--personal-root', type=Path, help='Actual personal frontend checkout; absent means unsupported search')
+    parser.add_argument('--personal-root', type=Path, help='Optional actual personal frontend profile; synthetic fixture search is checked by --quality')
     parser.add_argument('--long', action='store_true', help='Explicitly permit 50000/100000-page capacity cells')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--rss-gib', type=float, default=3)
@@ -89,7 +89,7 @@ def main():
         if process.returncode == 0:
             measured = json.loads(matrix_output.read_text())
             report['quality_statuses'] = [case.get('quality_status', 'unsupported: quality not requested') for case in measured.get('cases', [])]
-            report['personal_search'] = {'status': 'unsupported', 'reason': '--personal-root not supplied; synthetic Fuse frontend unavailable'}
+            report['personal_search'] = {'status': 'not_requested', 'reason': 'Optional personal frontend profile not selected; synthetic Fuse fixture search belongs to matrix quality evidence'}
             if args.personal_root:
                 search_output = args.output.with_name(args.output.stem + '-personal-search.json')
                 search_work = args.output.with_name(args.output.stem + '-personal-search-work-' + str(time.time_ns()))
@@ -99,7 +99,7 @@ def main():
                 report['personal_search'] = {'status': 'pass' if search_process.returncode == 0 else 'fail', 'report': str(search_output), 'command': search_command}
             if 'fail' in report['quality_statuses'] or report['personal_search']['status'] == 'fail':
                 report['status'] = 'failed_quality'
-            elif any(status != 'pass' for status in report['quality_statuses']) or report['personal_search']['status'] != 'pass':
+            elif any(status != 'pass' for status in report['quality_statuses']) or report['personal_search']['status'] not in ('pass', 'not_requested'):
                 report['status'] = 'partial'
         # This duration includes preparation, fixture generation and quality work;
         # only matrix samples are engine-generation performance measurements.

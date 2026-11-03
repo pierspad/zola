@@ -19,7 +19,7 @@ class ExtendedSuiteTests(unittest.TestCase):
             selected_cases('4000x15', False)
 
     def test_driver_never_calls_unsupported_quality_complete(self):
-        for quality, expected, exit_code in [('partial', 'partial', 0), ('fail', 'failed_quality', 1)]:
+        for quality, expected, exit_code in [('pass', 'completed', 0), ('partial', 'partial', 0), ('fail', 'failed_quality', 1)]:
             with tempfile.TemporaryDirectory() as folder:
                 output = Path(folder)/'run.json'
                 output.with_name('run-matrix.json').write_text(json.dumps({'cases': [{'status': 'passed', 'quality_status': quality}]}))
@@ -28,8 +28,20 @@ class ExtendedSuiteTests(unittest.TestCase):
                     self.assertEqual(extended_suite.main(), exit_code)
                 report = json.loads(output.read_text())
                 self.assertEqual(report['status'], expected)
-                self.assertEqual(report['personal_search']['status'], 'unsupported')
+                self.assertEqual(report['personal_search']['status'], 'not_requested')
                 self.assertIn('--warmups', report['command'])
+
+    def test_explicit_personal_profile_failure_is_not_ignored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)/'run.json'
+            output.with_name('run-matrix.json').write_text(json.dumps({'cases':[{'quality_status':'pass'}]}))
+            argv = ['extended_suite.py','--quick','--quality','--personal-root',str(Path(folder)/'missing'),
+                    '--output',str(output),'--rss-gib','0.01','--reserve-gib','0.01']
+            with patch('sys.argv',argv), patch.object(extended_suite,'memory_headroom',return_value={'effective_available_bytes':1024**3}), patch.object(extended_suite.subprocess,'run',side_effect=[SimpleNamespace(returncode=0),SimpleNamespace(returncode=1)]):
+                self.assertEqual(extended_suite.main(),1)
+            result = json.loads(output.read_text())
+            self.assertEqual(result['status'],'failed_quality')
+            self.assertEqual(result['personal_search']['status'],'fail')
 
     def test_invalid_cases(self):
         for value in ('no', '100x0', '100x16', '1x1', ''):

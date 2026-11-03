@@ -8,10 +8,13 @@ import argparse
 import hashlib
 import json
 import os
+import signal
+import tempfile
+import time
+import zlib
 from pathlib import Path
 import subprocess
 import sys
-import time
 from multilingual_fixtures import LANGUAGES
 from quality_metrics import encoded_bytes, encoder_versions
 
@@ -45,7 +48,7 @@ def specification(index, pages, lang, iterations):
     return {'adapter': str(HERE/'fuse_fixture_adapter.mjs'), 'index': str(index), 'expected_count': pages + 1,
             'expected_urls': urls, 'warmups': 2, 'iterations': iterations,
             'measurement': 'Pinned Fuse.js fixture consumer in Node; not shipped frontend/browser latency/LCP',
-            'source_files': [str(index), str(HERE/'vendor/fuse-7.1.0.mjs'), str(HERE/'fuse_fixture_adapter.mjs')],
+            'source_files': [str(index), str(HERE/'vendor/fuse-7.1.0.mjs'), str(HERE/'fuse_fixture_adapter.mjs'), str(Path(__file__).resolve())],
             'queries': [
                 {'text':'Orion telescope', 'expected':[url(0, lang), url(4, lang)], 'ranked_prefix':[url(0, lang)]},
                 {'text':'caffe resume', 'expected':[url(1, lang)]},
@@ -55,14 +58,71 @@ def specification(index, pages, lang, iterations):
             ]}
 
 
+def index_bytes(index):
+    """Bounded-memory static encodings, also safe for indexes too large to query."""
+    import quality_metrics
+    gzip = zlib.compressobj(9, zlib.DEFLATED, 31)
+    brotli = quality_metrics.brotli.Compressor(quality=5) if quality_metrics.brotli else None
+    result = {'raw_bytes':index.stat().st_size, 'gzip_bytes':0}
+    if brotli:
+        result['brotli_bytes'] = 0
+    with index.open('rb') as stream:
+        for chunk in iter(lambda:stream.read(1024 * 1024), b''):
+            result['gzip_bytes'] += len(gzip.compress(chunk))
+            if brotli:
+                result['brotli_bytes'] += len(brotli.process(chunk))
+    result['gzip_bytes'] += len(gzip.flush())
+    if brotli:
+        result['brotli_bytes'] += len(brotli.finish())
+    return result
+
+
+def guarded_probe(spec_path, index, descriptor):
+    from matrix import memory_headroom
+    available = memory_headroom()['effective_available_bytes']
+    limit = int(min(descriptor.get('rss_gib', 2) * 1024**3, available * .4))
+    size = index.stat().st_size
+    guard = {'index_bytes':size, 'max_index_bytes':descriptor.get('max_index_bytes', 128 * 1024**2),
+             'available_bytes':available, 'rss_limit_bytes':limit, 'timeout_seconds':descriptor.get('timeout', 180)}
+    if size > guard['max_index_bytes'] or size * 12 + 128 * 1024**2 > limit:
+        return {'status':'skipped_resource', 'reason':'Index exceeds explicit byte/estimated runtime memory budget', 'resource_guard':guard}
+    with tempfile.TemporaryFile(mode='w+') as output, tempfile.TemporaryFile(mode='w+') as error, tempfile.TemporaryDirectory(prefix='fuse-resource-') as folder:
+        evidence = Path(folder)/'usage.json'
+        process = subprocess.Popen([sys.executable,str(HERE/'resource_runner.py'),str(evidence),'node',str(HERE/'search_probe.mjs'),str(spec_path)], stdout=output, stderr=error, start_new_session=True)
+        start = time.monotonic()
+        reason = None
+        while process.poll() is None:
+            try:
+                child_pid = json.loads(evidence.read_text())['child_pid']
+                rss = next(int(line.split()[1])*1024 for line in Path(f'/proc/{child_pid}/status').read_text().splitlines() if line.startswith('VmRSS:'))
+            except (FileNotFoundError, StopIteration, json.JSONDecodeError, KeyError):
+                rss = 0
+            if rss > limit:
+                reason = 'RSS budget'
+            elif time.monotonic() - start > guard['timeout_seconds']:
+                reason = 'timeout budget'
+            if reason:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                break
+            time.sleep(.01)
+        output.seek(0)
+        error.seek(0)
+        if reason:
+            return {'status':'skipped_resource','reason':reason,'resource_guard':guard}
+        result = json.load(output) if process.returncode == 0 else {'status':'fail','stderr':error.read()}
+        result['resource_guard'] = guard
+        result['rss_measurement'] = 'Fresh low-memory broker wait4 of Node child; not inherited Python parent RSS'
+        if process.returncode == 0:
+            result['peak_process_rss_bytes'] = json.loads(evidence.read_text())['peak_rss_bytes']
+        return result
+
+
 def probe(index, pages, lang, work, iterations):
     spec = specification(index, pages, lang, iterations)
     spec_path = work/f'{index.stem}-spec.json'
     spec_path.write_text(json.dumps(spec, ensure_ascii=False))
-    process = subprocess.run(['node', str(HERE/'search_probe.mjs'), str(spec_path)], capture_output=True, text=True, timeout=180)
-    if process.returncode:
-        return {'status':'fail', 'stderr':process.stderr}
-    result = json.loads(process.stdout)
+    result = guarded_probe(spec_path, index, {})
     result['search_activation_index_download'] = {**encoded_bytes(index.read_bytes()), 'encoder_versions':encoder_versions(), 'policy':'fixture index bytes separate from initial HTML; transfer time not measured'}
     return result
 
@@ -81,22 +141,21 @@ def inspect_corpus(root, descriptor):
             expected = [prefix, prefix + 'articles/'] + [prefix + f'articles/page-{i:05}/' for i in range(articles)]
             index = root/f'search_index.{lang}.json'
             spec = {'adapter':str(HERE/'fuse_fixture_adapter.mjs'), 'index':str(index),
-                    'expected_count':articles + 2, 'expected_urls':expected, 'warmups':2, 'iterations':5,
+                    'expected_count':articles + 2, 'expected_urls':expected, 'warmups':2, 'iterations':descriptor.get('iterations', 5),
                     'measurement':'Pinned Fuse.js fixture consumer of actual generated corpus index; no shipped frontend or browser claim',
                     'source_files':[str(index),str(HERE/'vendor/fuse-7.1.0.mjs'),str(HERE/'fuse_fixture_adapter.mjs')],
                     'queries':[{'text':'Page 00000:', 'expected':[expected[2]], 'ranked_prefix':[expected[2]]},
-                               {'text':markers[lang] + ' Page 00000:', 'expected':[expected[2]]},
+                               {'text':markers[lang].split()[0], 'expected':expected},
                                {'text':'unfindablezzzz', 'expected':[]}]}
             if lang == 'en':
-                spec['queries'].append({'text':'Cafe naive facade resume Page 00000:', 'expected':[expected[2]]})
+                spec['queries'].append({'text':'Cafe naive facade resume', 'expected':expected})
             spec_path = Path(folder)/(lang + '.json')
             spec_path.write_text(json.dumps(spec, ensure_ascii=False))
-            process = subprocess.run(['node',str(HERE/'search_probe.mjs'),str(spec_path)],capture_output=True,text=True,timeout=180)
-            result = json.loads(process.stdout) if process.returncode == 0 else {'status':'fail','stderr':process.stderr}
+            result = guarded_probe(spec_path, index, descriptor) if index.is_file() else {'status':'fail','reason':'Index missing'}
             if index.is_file():
-                result['search_activation_index_download'] = encoded_bytes(index.read_bytes())
+                result['search_activation_index_download'] = index_bytes(index)
             results[lang] = result
-    return {'status':'pass' if all(item['status'] == 'pass' for item in results.values()) else 'fail',
+    return {'status':('fail' if any(item['status'] == 'fail' for item in results.values()) else ('pass' if all(item['status'] == 'pass' for item in results.values()) else 'partial')),
             'scope':'version-3 source-defined synthetic corpus; pinned fixture consumer; not site search UX',
             'shipped_frontend_provided':False, 'languages':results}
 
@@ -114,6 +173,7 @@ def main():
     work.mkdir(parents=True, exist_ok=False)
     binaries = {name:path.resolve() for name,path in [('fork',args.fork), ('upstream',args.upstream)]}
     report = {'scope':'fixture-only Fuse consumer; common upstream/fork fields; no date/headings/taxonomy search claim',
+              'fixture_generator_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'binary_sha256':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in binaries.items()}, 'cases':[]}
     for cell in args.cases.split(','):
         pages, count = map(int, cell.split('x'))

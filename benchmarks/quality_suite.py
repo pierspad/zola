@@ -23,7 +23,10 @@ def inspect_case(case):
     if case.get('binary'):
         result['binary'] = binary_metrics(case['binary'])
     search_spec = case.get('search_spec')
-    if not search_spec:
+    if case.get('fixture_search') and shutil.which('node'):
+        from synthetic_search_suite import inspect_corpus
+        result['search'] = inspect_corpus(root, case['fixture_search'])
+    elif not search_spec:
         result['search'] = {'status': 'unsupported', 'reason': 'No verified shipped frontend runtime adapter and query oracle supplied; index existence is not search quality.'}
     elif not shutil.which('node'):
         result['search'] = {'status': 'unsupported', 'reason': 'Node runtime unavailable'}
@@ -34,7 +37,7 @@ def inspect_case(case):
         except (subprocess.TimeoutExpired, ValueError) as error:
             result['search'] = {'status': 'fail', 'reason': str(error)}
     result['status'] = 'fail' if (result['technical_seo']['status'] == 'fail' or result['search']['status'] == 'fail' or any(d['missing_dependencies'] for d in result['reader_delivery'])) else 'pass'
-    if result['status'] == 'pass' and result['search']['status'] == 'unsupported':
+    if result['status'] == 'pass' and result['search']['status'] != 'pass':
         result['status'] = 'partial'
     return result
 

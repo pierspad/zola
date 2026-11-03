@@ -250,11 +250,11 @@ def run_case(spec, args, binary, env):
                 result['quality'] = {}
                 for label, site_root, engine in [('fork-full-and-incremental-identical-output', root, binary), ('upstream', upstream_root, args.upstream_binary)]:
                     if site_root:
-                        evidence = inspect_case({'label': label, 'output_root': str(site_root/'public'), 'base_url': base_url, 'pages': pages, 'binary': str(engine)})
-                        evidence['scope'] = 'Whole-output technical SEO and sitemap; representative homepage and English/available Arabic/CJK article delivery. Search requires a verified frontend adapter.'
+                        evidence = inspect_case({'label': label, 'output_root': str(site_root/'public'), 'base_url': base_url, 'pages': pages, 'binary': str(engine), 'fixture_search': {'articles': articles, 'languages': [lang for lang, _, _ in languages], 'base_url': base_url}})
+                        evidence['scope'] = 'Whole-output technical SEO and sitemap; representative homepage and English/available Arabic/CJK article delivery. Search executes the pinned fixture-only Fuse consumer with source-defined URL and Unicode query oracles; no shipped frontend/browser claim.'
                         evidence['fixture_context'] = 'Version 3 multilingual / workload 4 shared synthetic templates include SEO metadata; compare identical upstream and fork findings before engine attribution.'
                         result['quality'][label] = evidence
-                result['quality_status'] = 'fail' if any(item['status'] == 'fail' for item in result['quality'].values()) else 'partial'
+                result['quality_status'] = 'fail' if any(item['status'] == 'fail' for item in result['quality'].values()) else ('partial' if any(item['status'] == 'partial' for item in result['quality'].values()) else 'pass')
             # Independent fresh full oracles. Preserve mismatches, including stale thumbnails.
             if articles*count <= args.mutation_max_pages:
                 article(root, articles, 'en', LANGUAGES[0][1], summary=profile == 'newspaper')

@@ -89,3 +89,33 @@ A report is complete when provenance and statuses are explicit, official/full/in
 results are comparable, all unknown correctness differences fail, unit boundary tests
 pass, and unsupported measurements are identified. Performance regressions remain
 reported. No further engine optimization is justified by an incomplete measurement.
+
+## Fixture-only Fuse compatibility scope
+
+Where the selected profile has no shipped frontend (Zola's Fuse index generator),
+a pinned, explicitly identified fixture consumer may establish runtime compatibility
+without claiming shipped-frontend or browser validation. Use the actual published
+Fuse runtime, a verified version/hash/license and fixed disclosed options. The
+fixture consumer uses Fuse 7.1.0, title/body weights 0.8/0.2, threshold 0,
+ignoreLocation and ignoreDiacritics. Expected URL membership/counts and queries
+must come from source-fixture facts, never solely from the generated index under
+test. Reject missing/duplicate/wrong URLs, ranking corruption and lost Unicode
+content. Preserve a separate custom-frontend profile for the personal site.
+
+`synthetic_search_suite.py` covers minimal 100/1,000/10,000/1,000×15/25,000
+corpora across upstream full and fork full/incremental. It reports exact index
+compatibility, raw query wall/CPU samples, median/p95, Node peak process RSS and
+per-locale encoded activation bytes. It measures no engine speed or browser UX.
+The canonical rich-corpus matrix quality hook uses the same pinned consumer with
+its own source-defined oracle; successful fixture compatibility has a scoped pass
+and `shipped_frontend_provided: false`. Missing runtimes/adapters for an unknown
+profile remain unsupported. Historical partial reports are never relabeled.
+
+Rich-corpus query probes preflight each index against an explicit conservative
+128 MiB index budget and estimated memory of 12 × index bytes + 128 MiB. The
+runtime RSS watchdog uses min(2 GiB, 40% effective host/cgroup headroom), a
+180-second timeout and process-group termination. These are benchmark budgets,
+not inherent Fuse/browser capability limits. Resource skips yield partial quality,
+never a pass. Static gzip/Brotli byte estimates stream in 1 MiB chunks even when
+runtime execution is skipped. Node RSS uses the fresh low-memory wait4 broker to
+avoid reporting the large Python coordinator's inherited RSS as Node memory.

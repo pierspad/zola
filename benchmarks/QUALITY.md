@@ -217,3 +217,80 @@ Locally retained evidence (ignored benchmark artifacts):
 - `benchmarks/results/extended-baseline-fixture-v3-personal-search.json`
 - `benchmarks/results/extended-baseline-fixture-v3-host-noise.json`
 - `benchmarks/results/fork-build-fixture-v3.json`
+
+## Fixture-only Fuse runtime extension, 2026-11-03
+
+The historical baseline above remains partial. New evidence in
+`benchmarks/results/fuse-standard-current-v1.json` executes actual upstream/fork-generated
+indexes using pinned Fuse.js 7.1.0 (official source, SHA-256 and Apache license in
+`benchmarks/vendor`). Zola explicitly provides no Fuse frontend; this is a
+controlled fixture consumer, not validation of a shipped search UI. The actual
+personal site's custom frontend remains a separate search system.
+
+The deliberately minimal search corpus passed 100, 1,000, 10,000, 1,000 × 15
+locales and 25,000 article cells in upstream full, fork full and fork incremental
+modes. Every per-language index matched upstream exactly with the common enabled
+schema (title/body, date disabled). The source-defined oracle checks all document
+URLs/counts independently of the index and five queries: title-over-body ranking,
+accent folding, CJK, RTL and no hits. Seven regression tests reject missing/wrong/
+duplicate URLs, title-ranking corruption and lost Unicode content.
+
+Fork-full Node query results (two warmups, twenty measurements per query):
+
+| Articles/locales | Median range ms | p95 range ms | Peak Node RSS MiB |
+| --- | ---: | ---: | ---: |
+| 100 / 1 | 0.196–0.289 | 0.249–0.749 | 64.0 |
+| 1,000 / 1 | 1.889–2.411 | 1.962–2.723 | 65.7 |
+| 10,000 / 1 | 19.307–22.560 | 19.655–24.957 | 89.9 |
+| 1,000 / 15 | 1.730–3.613 | 1.802–4.090 | 66.6 |
+| 25,000 / 1 | 47.805–58.246 | 48.203–68.293 | 118.0 |
+
+The 25,000-article activation index is 3,738,945 raw / 138,763 gzip /
+56,203 Brotli bytes. In the 15-locale cell, one locale index ranges from
+145,948–211,948 raw / 5,977–6,418 gzip / 2,365–2,981 Brotli bytes;
+English is 147,945 / 5,978 / 2,373 bytes. All fifteen indexes together occupy
+2,432,217 raw bytes; the complete minimal site occupies 6,042,433 raw bytes.
+The 25,000-article minimal site occupies 9,404,665 raw bytes. These site totals
+are disk sizes, not single-visit downloads. Query processes load one locale,
+not all locale indexes. These are encoded-byte estimates and whole Node process
+peak RSS, not observed browser transfers or browser heap. The pinned runtime is
+a separate asset; Fuse uses no separate dictionary download in this fixture.
+Build latency of this minimal corpus is intentionally not reported or comparable
+to the rich stress/newspaper matrix.
+
+The canonical matrix quality hook now tests its own version-3 rich corpus with
+source-defined page/section membership, unique title, locale-script, accent-folded
+English and no-hit oracles. It records `shipped_frontend_provided: false` and the
+fixture scope. Reports without an adapter or known fixture descriptor continue
+to report unsupported search and partial quality. Existing reports are unchanged.
+
+The current extension uses the same `d2a648f5…` fork / `d0bee1dd…`
+official binaries attested in the corrected baseline. An earlier minimal report
+`fuse-standard-v1.json` used an older frozen binary (`8b31917d…`) and is preserved
+as historical evidence, not the current-fork result.
+
+The actual rich newspaper corpus was also executed: 1,000 articles in all fifteen
+locales, including its long bodies, images, taxonomies, feeds and pagination.
+All source-defined membership and 46 query oracles passed; every actual per-locale
+index was byte-identical to official upstream. The retained engine verification
+establishes full/incremental output identity, so equal indexes do not require
+redundant runtime probing for every engine mode. Evidence:
+`fuse-rich-current-1000x15-bounded-repeat.json`, alongside
+`remaining-timing-1000x15.json`.
+
+Rich indexes are 3,078,857–3,804,989 raw bytes per locale (English 3,130,801),
+43,225–56,117 gzip bytes and 14,918–16,341 Brotli bytes. All fifteen indexes
+occupy 48,886,281 raw bytes. A cold search loads one locale index, not all fifteen.
+In the bounded repeat, five samples after two warmups gave query medians
+49.428–75.120 ms, p95 50.630–173.658 ms and maximum fresh-broker Node RSS
+106.9 MiB. These small-sample shared-desktop observations are not absolute browser
+performance or browser-memory claims. The earlier twenty-sample rich report is
+preserved and explicitly flagged for a twenty-five-second overlapping agent CPU
+workload; the bounded repeat had no other agent workload, with ordinary background
+processes still uncontrolled.
+
+The unique title query stays below Fuse's 32-character Bitap chunk boundary.
+Runtime validation caught that longer combined marker/title patterns could admit
+all pages sharing one chunk even at threshold zero. Separate script-token and
+accent-folded queries therefore check the complete source-defined membership;
+no custom AND behavior is invented and attributed to Fuse.
