@@ -135,6 +135,7 @@ def main():
     parser.add_argument('--languages', type=int, default=15)
     parser.add_argument('--cycles', type=int, default=9)
     parser.add_argument('--binary', type=Path, default=Path('target/release/zola'))
+    parser.add_argument('--fork-build-metadata', type=Path, default=Path(__file__).parent/'results/fork-build-fixture-v3.json')
     parser.add_argument('--upstream-binary', type=Path, default=WORK/'upstream-target/release/zola')
     parser.add_argument('--rss-gib', type=float, default=6)
     parser.add_argument('--timeout', type=float, default=600)
@@ -152,6 +153,14 @@ def main():
     for name in ('binary', 'upstream_binary'):
         binary = getattr(args, name)
         report['binaries'][name] = {'path': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
+    report['build_attestations'] = {}
+    for name, path in [('binary', args.fork_build_metadata),
+                       ('upstream_binary', WORK/'upstream-target/baseline.json')]:
+        metadata = json.loads(path.read_text())
+        if metadata['binary_sha256'] != report['binaries'][name]['sha256']:
+            parser.error(f'{name} does not match its frozen build attestation: {path}')
+        report['build_attestations'][name] = {'path': str(path.resolve()),
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'metadata': metadata}
     def save():
         args.output.write_text(json.dumps(report, indent=2)+'\n')
     save()
