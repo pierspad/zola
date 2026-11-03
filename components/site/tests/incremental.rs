@@ -271,3 +271,33 @@ fn cache_memory_allowances_fall_back_without_changing_output() {
     site.save_incremental();
     assert_eq!(expected, manifest(root));
 }
+
+#[cfg(unix)]
+#[test]
+fn unreadable_unused_cache_input_falls_back_to_full_build() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "config.toml", "base_url = \"https://example.com\"\ntheme = \"scratch\"\n");
+    write(root, "content/_index.md", "+++\ntitle = \"Home\"\n+++\nHello\n");
+    write(root, "templates/index.html", "<main>{{ section.content | safe }}</main>");
+    write(root, "themes/scratch/theme.toml", "[extra]\n");
+    std::fs::create_dir_all(root.join("themes/scratch/templates")).unwrap();
+    write(root, "themes/scratch/unused.txt", "unused fingerprint input");
+    build(root, false).unwrap();
+    let expected = manifest(root);
+    let unused = root.join("themes/scratch/unused.txt");
+    std::fs::set_permissions(&unused, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Privileged test users can read mode-000 files and cannot exercise this failure.
+    if std::fs::read(&unused).is_ok() {
+        std::fs::set_permissions(&unused, std::fs::Permissions::from_mode(0o600)).unwrap();
+        return;
+    }
+    let full_result = build(root, false);
+    let result = build(root, true);
+    std::fs::set_permissions(&unused, std::fs::Permissions::from_mode(0o600)).unwrap();
+    full_result.unwrap();
+    result.unwrap();
+    assert_eq!(expected, manifest(root));
+    assert!(!root.join(".zola-cache/render-v2.json").exists());
+}

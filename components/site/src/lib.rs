@@ -141,7 +141,15 @@ impl Site {
             self.incremental = None;
             return Ok(());
         }
-        self.incremental = Some(incremental::MarkdownCache::open(self, &self.config_dir, bytes)?);
+        self.incremental = match incremental::MarkdownCache::open(self, &self.config_dir, bytes) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                log::warn!(
+                    "Could not initialize incremental cache; continuing with a full build: {error}"
+                );
+                None
+            }
+        };
         Ok(())
     }
 
