@@ -57,6 +57,48 @@ where
     format_hash(hasher, as_base64)
 }
 
+// Public asset names follow the same static-over-generated precedence as the
+// build. Explicit filesystem paths and @/ content paths keep their old lookup.
+fn hash_file(
+    base: &Path,
+    path: &str,
+    theme: &Option<String>,
+    output: &Path,
+    config: Option<&Config>,
+) -> errors::Result<Option<(PathBuf, String)>> {
+    let relative = path.trim_start_matches('/');
+    if path.starts_with("@/") || base.join(relative).exists() {
+        return search_for_file(base, path, theme, output);
+    }
+    let ignored = config
+        .and_then(|c| c.ignored_static_globset.as_ref())
+        .is_some_and(|g| g.is_match(relative));
+    let mut candidates = Vec::new();
+    if !ignored {
+        candidates.push((base.join("static").join(relative), false));
+    }
+    if let Some(theme) = theme {
+        candidates.push((base.join("themes").join(theme).join("static").join(relative), false));
+    }
+    candidates.push((base.join("content").join(relative), false));
+    candidates.push((base.join(output).join(relative), true));
+    for (file, generated) in candidates {
+        if file.is_file() {
+            if generated && !utils::fs::is_path_in_directory(&base.join(output), &file)? {
+                errors::bail!("Hash input is outside the configured output directory");
+            }
+            return Ok(Some((file, relative.to_owned())));
+        }
+    }
+    Ok(None)
+}
+
+// Generated output has already passed the build's minifier. Re-minifying here
+// can change bytes again and produce a hash that does not describe the output.
+fn is_hash_source(file: &Path, base: &Path, output: &Path) -> bool {
+    output.as_os_str().is_empty() || !file.starts_with(base.join(output))
+}
+
 fn compute_file_hash<D>(
     file_path: &Path,
     as_base64: bool,
@@ -115,7 +157,13 @@ impl GetUrl {
         {
             return Some(hash);
         }
-        let hash = compute_file_hash::<Sha256>(file_path, false, self.config.minify_html).ok()?;
+        let hash = compute_file_hash::<Sha256>(
+            file_path,
+            false,
+            self.config.minify_html
+                && is_hash_source(file_path, &self.base_path, &self.output_path),
+        )
+        .ok()?;
         self.result_cache
             .lock()
             .expect("result cache lock")
@@ -238,11 +286,12 @@ impl Function<TeraResult<String>> for GetUrl {
                 let hash = match maybe_hash {
                     Some(hash) => hash,
                     None => {
-                        match search_for_file(
+                        match hash_file(
                             &self.base_path,
                             &path_with_lang,
                             &self.config.theme,
                             &self.output_path,
+                            Some(&self.config),
                         )
                         .map_err(|e| Error::message(format!("`get_url`: {e}")))?
                         .and_then(|(file_path, unified_path)| {
@@ -277,6 +326,7 @@ pub struct GetHash {
     theme: Option<String>,
     output_path: PathBuf,
     minify_html: bool,
+    config: Option<Config>,
     result_cache: Mutex<HashMap<(String, u16, bool), String>>,
 }
 
@@ -292,8 +342,16 @@ impl GetHash {
             theme,
             output_path,
             minify_html,
+            config: None,
             result_cache: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl GetHash {
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = Some(config);
+        self
     }
 }
 
@@ -322,17 +380,24 @@ impl Function<TeraResult<String>> for GetHash {
                     return Ok(hash);
                 }
 
-                let (file_path, _) =
-                    search_for_file(&self.base_path, &key.0, &self.theme, &self.output_path)
-                        .map_err(|e| Error::message(format!("`get_hash`: {}", e)))?
-                        .ok_or_else(|| {
-                            Error::message(format!("`get_hash`: Cannot find file: {}", key.0))
-                        })?;
+                let (file_path, _) = hash_file(
+                    &self.base_path,
+                    &key.0,
+                    &self.theme,
+                    &self.output_path,
+                    self.config.as_ref(),
+                )
+                .map_err(|e| Error::message(format!("`get_hash`: {}", e)))?
+                .ok_or_else(|| {
+                    Error::message(format!("`get_hash`: Cannot find file: {}", key.0))
+                })?;
 
+                let minify_source = self.minify_html
+                    && is_hash_source(&file_path, &self.base_path, &self.output_path);
                 let hash = match sha_type {
-                    256 => compute_file_hash::<Sha256>(&file_path, base64, self.minify_html),
-                    384 => compute_file_hash::<Sha384>(&file_path, base64, self.minify_html),
-                    512 => compute_file_hash::<Sha512>(&file_path, base64, self.minify_html),
+                    256 => compute_file_hash::<Sha256>(&file_path, base64, minify_source),
+                    384 => compute_file_hash::<Sha384>(&file_path, base64, minify_source),
+                    512 => compute_file_hash::<Sha512>(&file_path, base64, minify_source),
                     _ => unreachable!(),
                 }
                 .map_err(|e| Error::message(format!("File {} could not be read: {}", key.0, e)))?;
@@ -1046,6 +1111,48 @@ title = "A title"
         let min_bytes = b"body{color:red}";
         let expected_hash = compute_hash::<sha2::Sha384>(min_bytes, true);
         assert_eq!(hash_minified, expected_hash);
+    }
+
+    #[test]
+    fn generated_output_hashes_use_exact_output_bytes() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let output = outside.path().to_path_buf();
+        let bytes = b"/* generated output */ body { color: red; }";
+        std::fs::write(output.join("style.css"), bytes).unwrap();
+        let hash = compute_hash::<sha2::Sha256>(bytes, false);
+        let mut config = Config::default();
+        config.minify_html = true;
+        let get_url = GetUrl::new(
+            dir.path().to_path_buf(),
+            config,
+            HashMap::new(),
+            output.clone(),
+            AHashMap::new(),
+        );
+        let ctx = Context::new();
+        let url = get_url
+            .call(
+                Kwargs::from([
+                    ("path", tera::Value::from("style.css")),
+                    ("cachebust", tera::Value::from(true)),
+                ]),
+                &State::new(&ctx),
+            )
+            .unwrap();
+        assert!(url.ends_with(&format!("?h={}", &hash[..20])));
+        let get_hash = GetHash::new(dir.path().to_path_buf(), None, output, true);
+        let actual = get_hash
+            .call(
+                Kwargs::from([
+                    ("path", tera::Value::from("style.css")),
+                    ("sha_type", tera::Value::from(256)),
+                    ("base64", tera::Value::from(false)),
+                ]),
+                &State::new(&ctx),
+            )
+            .unwrap();
+        assert_eq!(actual, hash);
     }
 
     #[test]

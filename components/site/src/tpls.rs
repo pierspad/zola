@@ -54,7 +54,8 @@ pub fn register_early_global_fns(site: &mut Site) {
             site.config.theme.clone(),
             site.output_path.clone(),
             site.config.minify_html,
-        ),
+        )
+        .with_config(site.config.clone()),
     );
     site.tera.register_filter(
         "markdown",
