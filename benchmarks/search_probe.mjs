@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Adapter must execute the selected shipped frontend, not reimplement its search.
+// Adapter must identify its scope: actual frontend or an explicit fixture consumer.
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
@@ -10,12 +10,15 @@ const adapter = await import(pathToFileURL(specification.adapter));
 if (typeof adapter.setup !== 'function') throw Error('adapter must export setup(specification)');
 const search = await adapter.setup(specification);
 const samples = [];
+const warmups = specification.warmups ?? 20;
+const iterations = specification.iterations ?? 100;
+if (!Number.isInteger(warmups) || warmups < 0 || !Number.isInteger(iterations) || iterations < 1) throw Error('invalid sample counts');
 for (const query of specification.queries) {
-  for (let i = 0; i < 20; i++) await search(query.text);
+  for (let i = 0; i < warmups; i++) await search(query.text);
   const times = [];
   const cpuTimes = [];
   let actual;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < iterations; i++) {
     const cpuStart = process.cpuUsage();
     const start = performance.now();
     actual = await search(query.text);
@@ -30,9 +33,9 @@ for (const query of specification.queries) {
   const rawTimes = [...times];
   times.sort((a, b) => a - b);
   samples.push({query: query.text, expected, actual, status: membership && ranking ? 'pass' : 'fail',
-    warmups: 20, iterations: times.length, median_ms: (times[49] + times[50]) / 2, p95_ms: times[Math.ceil(times.length * .95) - 1], raw_ms: rawTimes, raw_cpu_ms: cpuTimes});
+    warmups, iterations: times.length, median_ms: (times[Math.floor((times.length - 1) / 2)] + times[Math.floor(times.length / 2)]) / 2, p95_ms: times[Math.ceil(times.length * .95) - 1], raw_ms: rawTimes, raw_cpu_ms: cpuTimes});
 }
 console.log(JSON.stringify({status: samples.every(x => x.status === 'pass') ? 'pass' : 'fail',
-  measurement: 'Node process executing supplied shipped-frontend adapter; not browser latency or LCP',
+  measurement: specification.measurement ?? 'Node process executing supplied shipped-frontend adapter; not browser latency or LCP',
   runtime: process.version, peak_process_rss_bytes: process.resourceUsage().maxRSS * (process.platform === 'darwin' ? 1 : 1024),
   adapter_sha256: hash(specification.adapter), source_files: specification.source_files.map(path => ({path, sha256: hash(path)})), samples}));
