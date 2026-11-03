@@ -119,3 +119,12 @@ not inherent Fuse/browser capability limits. Resource skips yield partial qualit
 never a pass. Static gzip/Brotli byte estimates stream in 1 MiB chunks even when
 runtime execution is skipped. Node RSS uses the fresh low-memory wait4 broker to
 avoid reporting the large Python coordinator's inherited RSS as Node memory.
+
+Remaining-check capacity evidence now includes actual guarded 50,000- and
+100,000-article newspaper population builds for official full, fork full and
+fork incremental. These one-sample cold population runs establish bounded
+completion and output correctness, not warm speed or a relative speed ranking.
+All ten mutation scenarios also ran at 24×2, 10,000×1 and 1,000×15 against fresh
+full oracles. See QUALITY.md for report paths, resource limits and unresolved
+strict personal-site upstream differences. Existing historical reports remain
+unchanged.
