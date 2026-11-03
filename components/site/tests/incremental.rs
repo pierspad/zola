@@ -301,3 +301,114 @@ fn unreadable_unused_cache_input_falls_back_to_full_build() {
     assert_eq!(expected, manifest(root));
     assert!(!root.join(".zola-cache/render-v2.json").exists());
 }
+
+#[test]
+fn static_overrides_generated_outputs_without_modifying_hardlinked_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "config.toml",
+        r#"base_url = "https://example.com"
+theme = "scratch"
+hard_link_static = true
+minify_html = true
+build_search_index = true
+ignored_static = ["ignored.txt", "ignored.css"]
+compile_sass = true
+[search]
+index_format = "fuse_json"
+"#,
+    );
+    write(root, "content/_index.md", "+++\ntitle = \"Home\"\n+++\nHello\n");
+    write(
+        root,
+        "templates/index.html",
+        r#"<main data-hash="{{ get_hash(path="custom.css", sha_type=256, base64=false) }}" data-generated="{{ get_hash(path="generated.css", sha_type=256, base64=false) }}" data-theme="{{ get_hash(path="shadow.css", sha_type=256, base64=false) }}" data-ignored="{{ get_hash(path="ignored.css", sha_type=256, base64=false) }}"><a href="{{ get_url(path="shadow.css", cachebust=true) }}">Shadow</a>{{ section.content | safe }}</main>"#,
+    );
+    write(root, "themes/scratch/theme.toml", "[extra]\n");
+    std::fs::create_dir_all(root.join("themes/scratch/templates")).unwrap();
+    write(root, "themes/scratch/static/robots.txt", "theme robots");
+    write(root, "themes/scratch/static/404.html", "theme not found");
+    write(root, "sass/generated.scss", ".generated { margin: 0 0 0 0; color: red; }");
+    write(root, "sass/shadow.scss", ".wrong { color: red; }");
+    write(root, "themes/scratch/static/shadow.css", ".theme { color: blue; }");
+    write(root, "static/ignored.css", ".wrong { color: red; }");
+    write(root, "themes/scratch/static/ignored.css", ".theme { color: green; }");
+    write(root, "static/robots.txt", "User-agent: CustomBot\nDisallow: /\n");
+    write(root, "static/sitemap.xml", "custom sitemap");
+    write(root, "static/search_index.en.json", "custom search index");
+    #[cfg(unix)]
+    {
+        write(root, "external-search-source", "custom search index");
+        std::fs::remove_file(root.join("static/search_index.en.json")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("external-search-source"),
+            root.join("static/search_index.en.json"),
+        )
+        .unwrap();
+    }
+    write(root, "static/custom.css", "/* source must survive */ body { color: red; }\n");
+    write(root, "static/ignored.txt", "must not be copied");
+    let source_css = std::fs::read(root.join("static/custom.css")).unwrap();
+    for incremental in [false, true] {
+        build(root, incremental).unwrap();
+        let mut output = manifest(root);
+        output.insert(
+            "search_index.en.json".to_owned(),
+            std::fs::read(root.join("public/search_index.en.json")).unwrap(),
+        );
+        assert_eq!(output["robots.txt"], b"User-agent: CustomBot\nDisallow: /\n");
+        assert_eq!(output["404.html"], b"theme not found");
+        assert_eq!(output["sitemap.xml"], b"custom sitemap");
+        assert_eq!(output["search_index.en.json"], b"custom search index");
+        assert!(!output.contains_key("ignored.txt"));
+        assert_ne!(output["custom.css"], source_css);
+        use sha2::{Digest, Sha256};
+        let hash: String =
+            Sha256::digest(&output["custom.css"]).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(String::from_utf8_lossy(&output["index.html"]).contains(&hash));
+        for asset in ["generated.css", "shadow.css", "ignored.css"] {
+            let hash: String =
+                Sha256::digest(&output[asset]).iter().map(|b| format!("{b:02x}")).collect();
+            assert!(
+                String::from_utf8_lossy(&output["index.html"]).contains(&hash),
+                "{asset} hash must match winning output"
+            );
+        }
+        assert_eq!(std::fs::read(root.join("static/custom.css")).unwrap(), source_css);
+        assert_eq!(std::fs::read(root.join("static/robots.txt")).unwrap(), output["robots.txt"]);
+    }
+    for mode in [site::BuildMode::Both, site::BuildMode::Memory] {
+        let mut retained = Site::new(root, "config.toml").unwrap();
+        retained.enable_serve_mode(mode);
+        retained.load().unwrap();
+        for _ in 0..2 {
+            retained.build().unwrap();
+            let mut output = manifest(root);
+            output.insert(
+                "search_index.en.json".to_owned(),
+                std::fs::read(root.join("public/search_index.en.json")).unwrap(),
+            );
+            assert_eq!(output["robots.txt"], b"User-agent: CustomBot\nDisallow: /\n");
+            assert_eq!(output["search_index.en.json"], b"custom search index");
+            assert_eq!(
+                std::fs::read(root.join("static/search_index.en.json")).unwrap(),
+                b"custom search index"
+            );
+            assert_eq!(std::fs::read(root.join("static/custom.css")).unwrap(), source_css);
+            let memory = site::SITE_CONTENT.read().unwrap();
+            assert_eq!(
+                memory.get(relative_path::RelativePath::new("404.html")).unwrap(),
+                "theme not found"
+            );
+            for name in ["robots.txt", "sitemap.xml"] {
+                assert!(!memory.contains_key(relative_path::RelativePath::new(name)));
+            }
+        }
+    }
+    std::fs::remove_file(root.join("static/robots.txt")).unwrap();
+    build(root, true).unwrap();
+    assert_eq!(manifest(root)["robots.txt"], b"theme robots");
+    assert_matches_clean(root);
+}

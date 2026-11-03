@@ -842,6 +842,23 @@ impl Site {
         // Do not clean on `zola serve` otherwise we end up copying assets all the time
         if self.build_mode == BuildMode::Disk {
             self.clean()?;
+        } else {
+            // Retained serve output may still be hard-linked to static sources
+            // from a prior build. Unlink before generated writers can truncate it.
+            for path in self.static_asset_targets()? {
+                if let Ok(metadata) = fs::symlink_metadata(&path) {
+                    #[cfg(unix)]
+                    let linked = {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.nlink() > 1 || metadata.file_type().is_symlink()
+                    };
+                    #[cfg(not(unix))]
+                    let linked = true;
+                    if (metadata.is_file() || metadata.file_type().is_symlink()) && linked {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
         }
         start = log_time(start, "Cleaned folder");
 
@@ -858,9 +875,6 @@ impl Site {
             sass::compile_sass(&self.base_path, &self.output_path)?;
             start = log_time(start, "Compiled own Sass");
         }
-
-        self.copy_static_directories()?;
-        start = log_time(start, "Copied static dir");
 
         if self.config.needs_search_index() {
             self.build_search_index()?;
@@ -881,6 +895,10 @@ impl Site {
         // or from templates
         self.process_images()?;
         start = log_time(start, "Processed images");
+        // Static files retain upstream precedence over generated output. Copy only
+        // once, after rendering and image pruning, so explicit overrides win.
+        self.copy_static_directories()?;
+        start = log_time(start, "Copied static dir");
         // Processed images will be in static so copy them to output
         let processed_images_path = self.static_path.join(imageproc::RESIZED_SUBDIR);
         if processed_images_path.exists() {
@@ -893,7 +911,59 @@ impl Site {
             log_time(start, "Copied processed images");
         }
 
+        let static_targets = self.static_asset_targets()?;
+        if self.config.minify_html {
+            static_targets.par_iter().try_for_each(|path| self.minify_file(path))?;
+        }
+        if matches!(self.build_mode, BuildMode::Memory | BuildMode::Both) {
+            let mut content = SITE_CONTENT.write().unwrap();
+            for path in static_targets {
+                let relative = path.strip_prefix(&self.output_path)?;
+                let key = if relative.ends_with("index.html") {
+                    relative.parent().unwrap_or(relative)
+                } else {
+                    relative
+                };
+                if let Ok(key) = RelativePathBuf::from_path(key) {
+                    if relative == Path::new("404.html") {
+                        // The server's not-found handler reads this map directly.
+                        let bytes = fs::read(&path)?;
+                        content.insert(key, String::from_utf8_lossy(&bytes).into_owned());
+                    } else {
+                        content.remove(&key);
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn static_asset_targets(&self) -> Result<HashSet<PathBuf>> {
+        let mut roots = vec![(self.static_path.clone(), true)];
+        if let Some(theme) = &self.config.theme {
+            roots.push((self.base_path.join("themes").join(theme).join("static"), false));
+        }
+        let mut targets = HashSet::new();
+        for (root, own) in roots {
+            for entry in WalkDir::new(&root)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(std::result::Result::ok)
+            {
+                let relative = entry.path().strip_prefix(&root)?;
+                if entry.file_type().is_file()
+                    && !(own
+                        && self
+                            .config
+                            .ignored_static_globset
+                            .as_ref()
+                            .is_some_and(|g| g.is_match(relative)))
+                {
+                    targets.insert(self.output_path.join(relative));
+                }
+            }
+        }
+        Ok(targets)
     }
 
     pub fn minify_file(&self, path: &Path) -> Result<()> {
@@ -906,6 +976,8 @@ impl Site {
 
         let content = fs::read(path)?;
         if let Some(minified) = utils::minify::minify_asset_bytes(path, &content) {
+            // A static output may be hard-linked to its source. Replace the output
+            // inode rather than truncating and modifying the source asset.
             fs::remove_file(path)?;
             fs::write(path, minified)?;
         }
