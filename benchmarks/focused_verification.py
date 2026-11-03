@@ -34,10 +34,12 @@ def proc_snapshot():
         except (OSError, ValueError, IndexError):
             pass
     return {'monotonic': time.monotonic(), 'processes': processes,
-            'load_average': list(os.getloadavg()), 'memory': memory_headroom()}
+            'load_average': list(os.getloadavg()), 'memory': memory_headroom(),
+            'aggregate_cpu_ticks': [int(x) for x in Path('/proc/stat').read_text().splitlines()[0].split()[1:]],
+            'runqueue': next(int(line.split()[1]) for line in Path('/proc/stat').read_text().splitlines() if line.startswith('procs_running '))}
 
 
-def noise_interval(before, after, seconds):
+def noise_interval(before, after, seconds, engine_cpu=0):
     ticks = os.sysconf('SC_CLK_TCK')
     total = sum(max(0, p['ticks']-before['processes'].get(pid, {}).get('ticks', p['ticks']))
                 for pid, p in after['processes'].items()
@@ -49,8 +51,20 @@ def noise_interval(before, after, seconds):
                   for pid, p in after['processes'].items()
                   if pid in before['processes'] and before['processes'][pid]['start'] == p['start']),
                  key=lambda p: p['cpu_seconds'], reverse=True)[:8]
-    return {'persistent_external_cpu_seconds': total, 'external_cpu_cores': total/seconds,
+    result = {'persistent_external_cpu_seconds': total, 'external_cpu_cores': total/seconds,
             'top': top, 'limitation': 'Exited external processes are not observed; persistent processes only.'}
+    if 'aggregate_cpu_ticks' in before and 'aggregate_cpu_ticks' in after:
+        delta = [b-a for a,b in zip(before['aggregate_cpu_ticks'], after['aggregate_cpu_ticks'])]
+        # Linux guest counters are already included in user/nice; count only the
+        # first eight fields, exclude idle and iowait from active CPU.
+        active = sum(delta[i] for i in (0, 1, 2, 5, 6, 7))/ticks
+        result.update({'host_active_cpu_seconds': active,
+            'host_idle_including_iowait_fraction': (delta[3]+delta[4])/sum(delta[:8]),
+            'aggregate_external_cpu_seconds_estimate': max(0, active-engine_cpu),
+            'aggregate_external_cpu_cores_estimate': max(0, active-engine_cpu)/seconds,
+            'aggregate_estimate_scope': 'Host active CPU minus inner engine child rusage; includes orchestration/kernel work, captures exited processes; endpoint/read skew remains.',
+            'runqueue_before': before['runqueue'], 'runqueue_after': after['runqueue']})
+    return result
 
 
 def compatibility(root):
@@ -218,7 +232,7 @@ def main():
                 report['mutations'] = entries
                 save()
             entries = mutations(root, args.articles, languages, args.binary, env, args, checkpoint)
-            report['status'] = 'passed' if all(e['equal'] for e in entries) else 'correctness_failure'
+            report['status'] = 'passed' if all(e['equal'] and e['changed_from_previous_output_count'] > 0 for e in entries) else 'correctness_failure'
         else:
             upstream = args.work/'official'
             shutil.copytree(root, upstream)
@@ -257,7 +271,7 @@ def main():
                     before = proc_snapshot()
                     sample = build(binary, site, env, incremental, args)
                     after = proc_snapshot()
-                    sample['noise'] = noise_interval(before, after, sample['seconds'])
+                    sample['noise'] = noise_interval(before, after, sample['seconds'], sample['cpu_total_seconds'])
                     sample['noise_gate_passed'] = sample['noise']['external_cpu_cores'] <= args.external_cores
                     sample['exact_output_equal'] = manifest(site/'public') == expected[name]
                     report['samples'][name].append(sample)
