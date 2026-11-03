@@ -66,3 +66,14 @@ Local retained evidence under ignored `benchmarks/results/`:
 - `browser-personal-summary.json`: binary/source hashes, final search request records and initial delivery paths/totals.
 
 Re-run the root regression tests with `node --test tests/search-loading.test.cjs`. Rebuild each isolated copy with its respective binary, localhost `--base-url`, and an absolute dedicated `--output-dir`; launch `local_search_server.py` on ports 8765 and 8766; then repeat the UI checks above in an actual browser. The servers implement test compression, not production caching policy.
+
+## Canonical capacity payload sizes
+
+After the capacity oracle exited, the retained upstream canonical Fuse indexes were compressed incrementally in 1 MiB chunks without JSON parsing, browser loading or a Node query. The synthetic corpus is highly repetitive, so encoded sizes must not be generalized to real content. Compression does not remove decoded JSON size or client parse/search memory costs.
+
+| Canonical English full index | Raw bytes | gzip level 6 bytes | Brotli quality 5 bytes |
+|---|---:|---:|---:|
+| 50,000 documents | 157,093,601 | 2,339,762 | 604,590 |
+| 100,000 documents | 314,253,601 | 4,677,571 | 1,216,346 |
+
+Inputs are `benchmarks/work/remaining-capacity-{50000x1,100000x1}-final/official/public/search_index.en.json`. The upstream copies retain the exact count; the fork 100k copy was subsequently mutated to 100,001 for incremental verification. Both full indexes exceed the synthetic runtime's 128 MiB decoded-file guard (134,217,728 bytes). A skipped guarded browser/runtime case is an explicit frontend architecture limitation, not evidence of supported 100k browser search. Partitioned dictionaries or server-side search should be evaluated for that scale. The actual personal dictionary remains under 15 KB per language, a separate verified scope. Machine-readable byte counts are retained in `benchmarks/results/canonical-capacity-compression.json`; compression duration is diagnostic only and not a performance comparison.
