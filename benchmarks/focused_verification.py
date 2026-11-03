@@ -76,6 +76,7 @@ def mutations(root, articles, languages, binary, env, args, checkpoint):
     template = root/'templates/base.html'
     template.write_text(template.read_text().replace('<main>', '<main><span>{{ trans(key="verification", lang="en") }}</span>'))
     build(binary, root, env, True, args)
+    previous_output = manifest(root/'public')
     scenarios = ['new_article_all_languages', 'edit_translation', 'metadata', 'delete_translation',
                  'rename_translation', 'template', 'sass', 'media', 'asset', 'language']
     for scenario in scenarios:
@@ -97,10 +98,13 @@ def mutations(root, articles, languages, binary, env, args, checkpoint):
         candidate = manifest(root/'public')
         expected, oracle_sample = fresh_oracle(root, binary, env, args)
         changed = sorted(k for k in candidate.keys() | expected.keys() if candidate.get(k) != expected.get(k))
+        affected = sorted(k for k in candidate.keys() | previous_output.keys() if candidate.get(k) != previous_output.get(k))
         result.append({'scenario': scenario, 'equal': not changed, 'changed_paths': changed,
+                       'changed_from_previous_output_count': len(affected),
                        'candidate': candidate_sample, 'oracle': oracle_sample,
                        'oracle_manifest_sha256': digest(expected)})
         checkpoint(result)
+        previous_output = candidate
         if changed:
             break
     return result
@@ -229,10 +233,16 @@ def main():
                              if expected['full'].get(k) != expected['upstream_full'].get(k))
             report['official_comparison'] = classify_baseline(upstream/'public', root/'public', changed)
             report['warmups'] = {}
-            for name, (binary, site, incremental) in modes.items():
-                report['warmups'][name] = build(binary, site, env, incremental, args)
+            if args.mode == 'timing':
+                for name, (binary, site, incremental) in modes.items():
+                    report['warmups'][name] = build(binary, site, env, incremental, args)
+            else:
+                report['capacity_scope'] = 'One guarded population build per engine/mode; capacity and output correctness, not repeated timing inference.'
+                for name, sample in report['population'].items():
+                    report['samples'][name].append({**sample, 'exact_output_equal': True,
+                        'noise_gate_passed': False, 'noise_not_measured': 'capacity observation'})
             report['orders'] = []
-            for cycle in range(args.cycles if args.mode == 'timing' else 1):
+            for cycle in range(args.cycles if args.mode == 'timing' else 0):
                 order = list(modes)
                 offset = cycle % len(order)
                 order = order[offset:]+order[:offset]
