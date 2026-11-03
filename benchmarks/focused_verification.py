@@ -170,13 +170,21 @@ def main():
     try:
         if args.mode == 'personal':
             source = args.personal_root.resolve()
-            for name in ('content', 'static', 'templates', 'themes', 'sass', '.git'):
-                path = source/name
+            excluded = {'zola', 'zola-pkg', 'public', '.zola-cache', '.vscode', '__pycache__'}
+            report['personal_copy_excluded_root_entries'] = sorted(excluded)
+            for path in source.iterdir():
+                name = path.name
+                if name in excluded:
+                    continue
                 if path.is_dir():
                     shutil.copytree(path, root/name, ignore=shutil.ignore_patterns('.git') if name != '.git' else None)
                 elif path.is_file():
                     shutil.copy2(path, root/name)
-            shutil.copy2(source/'config.toml', root/'config.toml')
+            generator = root/'prepush-scripts/02-generate-search-dicts.py'
+            generated = subprocess.run(['python3', str(generator)], cwd=root, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
+            report['search_dictionary_preparation'] = {'command': ['python3', str(generator)],
+                                                       'log': generated.stdout, 'timed': False}
             report['production_input_sha256'] = digest(manifest(root))
             report['production_config_sha256'] = hashlib.sha256((root/'config.toml').read_bytes()).hexdigest()
             try:
