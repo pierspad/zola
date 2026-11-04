@@ -26,5 +26,23 @@ class NoiseTests(unittest.TestCase):
         self.assertEqual(len(result['top']), 1)
 
 
+class PersonalInputTests(unittest.TestCase):
+    def test_cold_site_cache_is_symmetric_but_theme_assets_survive(self):
+        import tempfile
+        from pathlib import Path
+        from focused_verification import prepare_personal_comparison
+        with tempfile.TemporaryDirectory() as tmp:
+            root, official = Path(tmp)/'site', Path(tmp)/'official'
+            (root/'static/processed_images').mkdir(parents=True)
+            (root/'static/processed_images/stale.webp').write_bytes(b'cache')
+            theme = root/'themes/theme/static/processed_images/asset.webp'
+            theme.parent.mkdir(parents=True)
+            theme.write_bytes(b'tracked theme asset')
+            report = prepare_personal_comparison(root, official)
+            self.assertTrue(report['exact_input_manifests_equal'])
+            self.assertFalse((root/'static/processed_images').exists())
+            self.assertEqual((official/theme.relative_to(root)).read_bytes(), theme.read_bytes())
+
+
 if __name__ == '__main__':
     unittest.main()

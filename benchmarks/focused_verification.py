@@ -125,6 +125,20 @@ def mutations(root, articles, languages, binary, env, args, checkpoint):
     return result
 
 
+def prepare_personal_comparison(root, upstream):
+    """Cold site image cache; retain tracked theme static assets symmetrically."""
+    shutil.rmtree(root/'static/processed_images', ignore_errors=True)
+    ignored = {'public', '.zola-cache'}
+    def root_only(path, names):
+        return sorted(ignored.intersection(names)) if Path(path) == root else []
+    shutil.copytree(root, upstream, ignore=root_only)
+    before, after = manifest(root), manifest(upstream)
+    if before != after:
+        raise ValueError('Personal comparison input manifests differ before engine builds')
+    return {'policy': 'Remove only site static/processed_images cache from both clean comparison inputs; preserve theme static assets. Original production comparison retains source caches.',
+            'file_count': len(before), 'sha256': digest(before), 'exact_input_manifests_equal': True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['timing', 'mutations', 'capacity', 'personal'])
@@ -204,7 +218,7 @@ def main():
             shutil.rmtree(root/'public', ignore_errors=True)
             shutil.rmtree(root/'.zola-cache', ignore_errors=True)
             upstream = args.work/'official'
-            shutil.copytree(root, upstream, ignore=shutil.ignore_patterns('public', 'processed_images', '.zola*'))
+            report['compatible_input_equality'] = prepare_personal_comparison(root, upstream)
             modes = {'upstream_full': (args.upstream_binary, upstream, False),
                      'full': (args.binary, root, False), 'incremental': (args.binary, root, True)}
             report['samples'] = {name: [] for name in modes}
