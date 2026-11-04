@@ -47,7 +47,7 @@ def normalize_asset_urls(text, document, base_url, assets):
     return text
 
 
-def verified_image_attributes(before, after, document, base_url, official, fork):
+def verified_image_attributes(before, after, document, base_url, official, fork, native_first=None):
     """Prove only dimensions of identical source bytes and lazy-to-eager changes.
 
     Only the first parsed content image may lose lazy loading. Non-pixel SVG
@@ -75,6 +75,8 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
     old, new = tags(before), tags(after)
     if len(old) != len(new):
         return before, after, evidence
+    native_url = (native_first or {}).get(document)
+    native_matches = sum(urljoin(base_url.rstrip('/') + '/' + document, attrs.get('src', '')) == native_url for _, attrs, _ in old) if native_url else 0
     edits = [[], []]
     for index, ((raw_a, a, pos_a), (raw_b, b, pos_b)) in enumerate(zip(old, new)):
         pa, pb = source(official, a.get('src', '')), source(fork, b.get('src', ''))
@@ -95,7 +97,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
                     remove_b.append(key)
         except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
             pass
-        if index == 0 and a.get('loading') == 'lazy' and 'loading' not in b:
+        if (index == 0 or (native_matches == 1 and urljoin(base_url.rstrip('/') + '/' + document, a.get('src', '')) == native_url)) and a.get('loading') == 'lazy' and 'loading' not in b:
             remove_a.append('loading')
         if not remove_a and not remove_b:
             continue
@@ -112,7 +114,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
                          'svg_literal_units': svg_units,
                          'dimension_policy': 'Exact integral SVG pixel dimensions.' if svg_units else 'Decoded raster pixel dimensions.',
                          'official_attributes': remove_a, 'fork_attributes': remove_b,
-                         'loading_policy_scope': 'Only first parsed content image; render fragments beyond that require review.'})
+                         'loading_policy_scope': 'First parsed content image or unique URL independently verified as first native Markdown image in the exact source.'})
     texts = [before, after]
     for i in range(2):
         for start, length, value in reversed(edits[i]):
@@ -120,7 +122,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
     return *texts, evidence
 
 
-def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
+def verified_feed_contents(before, after, base_url, official, fork, asset_maps, native_first=None):
     """Compare escaped HTML within feed entries using each article's URL."""
     proofs = []
     try:
@@ -141,7 +143,7 @@ def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
         if links[0] != links[1] or not links[0] or not all(contents):
             continue
         doc = urlsplit(links[0]).path.lstrip('/')
-        a, b, image_proofs = verified_image_attributes(*contents, doc, base_url, official, fork)
+        a, b, image_proofs = verified_image_attributes(*contents, doc, base_url, official, fork, native_first)
         normalized = [normalize_asset_urls(value, doc, base_url, assets) for value, assets in zip((a, b), asset_maps)]
         if normalized[0] != normalized[1]:
             continue
@@ -168,7 +170,7 @@ def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
     return *texts, proofs
 
 
-def classify(official, fork, changed, minifier=None, base_url='https://classification.invalid/'):
+def classify(official, fork, changed, minifier=None, base_url='https://classification.invalid/', native_first=None):
 
     proofs, unknown = {}, []
     for name in changed:
@@ -217,9 +219,9 @@ def classify(official, fork, changed, minifier=None, base_url='https://classific
         if name.endswith(('.html', '.xml')) and before.is_file() and after.is_file():
             original, candidate = before.read_text(), after.read_text()
             if name.endswith('.xml'):
-                original, candidate, image_proofs = verified_feed_contents(original, candidate, base_url, official, fork, asset_maps)
+                original, candidate, image_proofs = verified_feed_contents(original, candidate, base_url, official, fork, asset_maps, native_first)
             else:
-                original, candidate, image_proofs = verified_image_attributes(original, candidate, name, base_url, official, fork)
+                original, candidate, image_proofs = verified_image_attributes(original, candidate, name, base_url, official, fork, native_first)
             normalized = normalize_asset_urls(original, name, base_url, asset_maps[0])
             expected = normalize_asset_urls(candidate, name, base_url, asset_maps[1])
             if (image_proofs or normalized != original or expected != candidate) and normalized == expected:
@@ -243,6 +245,7 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--minifier', type=Path)
     parser.add_argument('--minifier-library', type=Path)
+    parser.add_argument('--native-image-proofs', type=Path)
     parser.add_argument('--base-url', default='https://classification.invalid/')
     args = parser.parse_args()
     report = json.loads(args.report.read_text())
@@ -253,7 +256,27 @@ def main():
     changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
     if changed != sorted(report['changed_paths']):
         raise ValueError('Supplied changed_paths is incomplete or differs from complete output manifests')
-    result = classify(args.official, args.fork, changed, args.minifier, args.base_url)
+    native_first = {}
+    if args.native_image_proofs:
+        evidence = json.loads(args.native_image_proofs.read_text())
+        helper = Path(evidence['parser_executable'])
+        if hashlib.sha256(helper.read_bytes()).hexdigest() != evidence['parser_executable_sha256']:
+            raise ValueError('Native Markdown parser executable fingerprint mismatch')
+        for page in evidence['pages']:
+            source = Path(page['source'])
+            if hashlib.sha256(source.read_bytes()).hexdigest() != page['source_sha256']:
+                raise ValueError('Native Markdown source fingerprint mismatch')
+            actual = subprocess.check_output([str(helper), str(source)], text=True).strip()
+            if actual != page['first_native_image']:
+                raise ValueError('Source first native Markdown image does not match proof')
+            article_path = urlsplit(page['article_url']).path.lstrip('/')
+            resolved = urljoin(page['article_url'], actual)
+            native_first[article_path] = resolved
+            native_first[article_path + 'index.html'] = resolved
+    result = classify(args.official, args.fork, changed, args.minifier, args.base_url, native_first)
+    if args.native_image_proofs:
+        result['native_image_proof_report'] = str(args.native_image_proofs)
+        result['native_image_proof_sha256'] = hashlib.sha256(args.native_image_proofs.read_bytes()).hexdigest()
     result['complete_manifests_verified'] = True
     result['official_file_count'], result['fork_file_count'] = len(before), len(after)
     result['source_report'] = str(args.report)

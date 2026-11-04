@@ -107,3 +107,20 @@ class ClassificationTests(unittest.TestCase):
             x, y, _ = verified_feed_contents(feed(a, a), feed(b, b), 'https://example.com/', *roots, [{}, {}])
             self.assertNotEqual(x, y)
             self.assertIn('<description>'+html.escape(a, quote=True)+'</description>', x)
+
+    def test_source_verified_first_native_image_may_follow_authored_html(self):
+        from classify_personal_outputs import verified_image_attributes
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [Path(tmp)/name for name in ['official', 'fork']]
+            for root in roots:
+                root.mkdir()
+                (root/'image.svg').write_text('<svg width="10" height="20"/>')
+            authored = '<img src="/other.svg" loading="lazy">'
+            native = '<img src="/image.svg" loading="lazy">'
+            a, b = authored+native, authored+native.replace(' loading="lazy"', '')
+            proof = {'index.html': 'https://example.com/image.svg'}
+            x, y, _ = verified_image_attributes(a, b, 'index.html', 'https://example.com/', *roots, proof)
+            self.assertEqual(x, y)
+            self.assertIn(authored, x)
+            x, y, _ = verified_image_attributes(a+native, b+native, 'index.html', 'https://example.com/', *roots, proof)
+            self.assertNotEqual(x, y)
