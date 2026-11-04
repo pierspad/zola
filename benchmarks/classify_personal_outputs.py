@@ -2,14 +2,52 @@
 """Prove localized asset deduplication by exact bytes; preserve all other deltas."""
 import argparse
 import hashlib
+import html
 import json
 import re
 import subprocess
 import tempfile
+from urllib.parse import urljoin, urlsplit, unquote
 from pathlib import Path
+from html.parser import HTMLParser
 
 
-def classify(official, fork, changed, minifier=None):
+def normalize_asset_urls(text, document, base_url, assets):
+    """Replace only actual resource attributes with exact, verified URL keys."""
+    def value(raw):
+        url = urlsplit(urljoin(base_url.rstrip('/') + '/' + document, html.unescape(raw)))
+        if url.netloc != urlsplit(base_url).netloc or url.fragment:
+            return raw
+        token = assets.get((unquote(url.path).lstrip('/'), url.query))
+        return '/__verified_asset_' + token if token else raw
+    class Tags(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.edits = []
+            self.lines = [0]
+            self.lines.extend(m.end() for m in re.finditer('\n', text))
+        def handle_starttag(self, tag, attrs):
+            raw = self.get_starttag_text()
+            pattern = r'([^\s"\'<>/=]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'<>]+))'
+            def replace(m):
+                if m[1] not in {'src', 'href', 'poster', 'data-search-css', 'data-search-src'}:
+                    return m[0]
+                group = next(i for i in (2, 3, 4) if m[i] is not None)
+                return m[0][:m.start(group)-m.start()] + value(m[group]) + m[0][m.end(group)-m.start():]
+            changed = re.sub(pattern, replace, raw)
+            if changed != raw:
+                line, col = self.getpos()
+                self.edits.append((self.lines[line-1]+col, len(raw), changed))
+        handle_startendtag = handle_starttag
+    parser = Tags()
+    parser.feed(text)
+    for start, length, replacement in reversed(parser.edits):
+        text = text[:start] + replacement + text[start+length:]
+    return text
+
+
+def classify(official, fork, changed, minifier=None, base_url='https://classification.invalid/'):
+
     proofs, unknown = {}, []
     for name in changed:
         before = official / name
@@ -39,21 +77,28 @@ def classify(official, fork, changed, minifier=None):
     hash_pairs = [(name, proof['official_sha256'][:20], proof['fork_sha256'][:20])
                   for name, proof in proofs.items()
                   if proof['classification'] == 'exact_asset_minifier_output']
+    asset_maps = [{}, {}]
+    for old, proof in list(proofs.items()):
+        if proof['classification'] != 'localized_asset_deduplication':
+            continue
+        for root, asset_map in zip([official, fork], asset_maps):
+            for path in [old, proof['same_bytes_fork_path']]:
+                target = root / path
+                if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == proof['sha256']:
+                    asset_map[(path, '')] = proof['sha256']
+    for name, old_hash, new_hash in hash_pairs:
+        for asset_map, resource_hash in zip(asset_maps, (old_hash, new_hash)):
+            asset_map[(name, 'h=' + resource_hash)] = 'minified_' + name
     remaining = []
     for name in unknown:
         before, after = official / name, fork / name
         if name.endswith(('.html', '.xml')) and before.is_file() and after.is_file():
-            original = before.read_text()
-            normalized = original
-            used = []
-            for asset, old_hash, new_hash in hash_pairs:
-                pattern = r'(?<=/)' + re.escape(asset) + r'\?h=' + old_hash + r'(?![0-9a-f])'
-                normalized, count = re.subn(pattern, asset + '?h=' + new_hash, normalized)
-                if count:
-                    used.append(asset)
-            if used and normalized == after.read_text():
-                proofs[name] = {'classification': 'verified_minified_asset_hash_urls_only',
-                                'verified_assets': used}
+            original, candidate = before.read_text(), after.read_text()
+            normalized = normalize_asset_urls(original, name, base_url, asset_maps[0])
+            expected = normalize_asset_urls(candidate, name, base_url, asset_maps[1])
+            if (normalized != original or expected != candidate) and normalized == expected:
+                proofs[name] = {'classification': 'verified_asset_urls_only',
+                                'scope': 'Actual resource attributes, exact URL and bytes verified; URL compatibility is separately tested.'}
                 continue
         remaining.append(name)
     unknown = remaining
@@ -71,10 +116,21 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--minifier', type=Path)
     parser.add_argument('--minifier-library', type=Path)
+    parser.add_argument('--base-url', default='https://classification.invalid/')
     args = parser.parse_args()
     report = json.loads(args.report.read_text())
-    result = classify(args.official, args.fork, report['changed_paths'], args.minifier)
+    def manifest(root):
+        return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in root.rglob('*') if p.is_file()}
+    before, after = manifest(args.official), manifest(args.fork)
+    changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+    if changed != sorted(report['changed_paths']):
+        raise ValueError('Supplied changed_paths is incomplete or differs from complete output manifests')
+    result = classify(args.official, args.fork, changed, args.minifier, args.base_url)
+    result['complete_manifests_verified'] = True
+    result['official_file_count'], result['fork_file_count'] = len(before), len(after)
     result['source_report'] = str(args.report)
+    result['base_url'] = args.base_url
     if args.minifier:
         result['minifier_executable_sha256'] = hashlib.sha256(args.minifier.read_bytes()).hexdigest()
         source = Path(__file__).with_name('minify_asset_proof.rs')
