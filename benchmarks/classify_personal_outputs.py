@@ -50,8 +50,8 @@ def normalize_asset_urls(text, document, base_url, assets):
 def verified_image_attributes(before, after, document, base_url, official, fork):
     """Prove only dimensions of identical source bytes and lazy-to-eager changes.
 
-    The fork's renderer intentionally omits lazy loading on its first Markdown
-    image. This is a behavioral exception, not a claim of byte equivalence.
+    Only the first parsed content image may lose lazy loading. Non-pixel SVG
+    dimensions remain unclassified; no physical-unit conversion is assumed.
     """
     from PIL import Image
     evidence = []
@@ -66,22 +66,27 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
         class Images(HTMLParser):
             def handle_starttag(self, tag, attrs):
                 if tag == 'img':
-                    values.append((self.get_starttag_text(), dict(attrs)))
+                    line, col = self.getpos()
+                    offset = sum(len(part) for part in text.splitlines(keepends=True)[:line-1]) + col
+                    values.append((self.get_starttag_text(), dict(attrs), offset))
             handle_startendtag = handle_starttag
         Images(convert_charrefs=False).feed(text)
         return values
     old, new = tags(before), tags(after)
     if len(old) != len(new):
         return before, after, evidence
-    for (raw_a, a), (raw_b, b) in zip(old, new):
+    edits = [[], []]
+    for index, ((raw_a, a, pos_a), (raw_b, b, pos_b)) in enumerate(zip(old, new)):
         pa, pb = source(official, a.get('src', '')), source(fork, b.get('src', ''))
         if not pa or not pb or pa.read_bytes() != pb.read_bytes():
             continue
         remove_a, remove_b = [], []
+        svg_units = None
         try:
             if pb.suffix.lower() == '.svg':
                 svg = ET.parse(pb).getroot()
-                width, height = (int(float(re.fullmatch(r'(\d+(?:\.\d+)?)(?:px|pt)?', svg.attrib[key])[1])) for key in ('width', 'height'))
+                svg_units = {key: svg.attrib[key] for key in ('width', 'height')}
+                width, height = (int(re.fullmatch(r'(\d+)(?:px)?', svg.attrib[key])[1]) for key in ('width', 'height'))
             else:
                 with Image.open(pb) as image:
                     width, height = image.size
@@ -90,7 +95,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
                     remove_b.append(key)
         except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
             pass
-        if a.get('loading') == 'lazy' and 'loading' not in b:
+        if index == 0 and a.get('loading') == 'lazy' and 'loading' not in b:
             remove_a.append('loading')
         if not remove_a and not remove_b:
             continue
@@ -98,14 +103,21 @@ def verified_image_attributes(before, after, document, base_url, official, fork)
             for key in keys:
                 raw = re.sub(r'\s+' + key + r'=(?:"[^"]*"|\'[^\']*\'|[^\s>]+)', '', raw)
             return raw
-        before = before.replace(raw_a, strip(raw_a, remove_a), 1)
-        after = after.replace(raw_b, strip(raw_b, remove_b), 1)
+        edits[0].append((pos_a, len(raw_a), strip(raw_a, remove_a)))
+        edits[1].append((pos_b, len(raw_b), strip(raw_b, remove_b)))
         evidence.append({'official_asset': str(pa.relative_to(official)),
                          'fork_asset': str(pb.relative_to(fork)),
                          'source_sha256': hashlib.sha256(pb.read_bytes()).hexdigest(),
                          'source_dimensions': [width, height] if remove_b else None,
-                         'official_attributes': remove_a, 'fork_attributes': remove_b})
-    return before, after, evidence
+                         'svg_literal_units': svg_units,
+                         'dimension_policy': 'Exact integral SVG pixel dimensions.' if svg_units else 'Decoded raster pixel dimensions.',
+                         'official_attributes': remove_a, 'fork_attributes': remove_b,
+                         'loading_policy_scope': 'Only first parsed content image; render fragments beyond that require review.'})
+    texts = [before, after]
+    for i in range(2):
+        for start, length, value in reversed(edits[i]):
+            texts[i] = texts[i][:start] + value + texts[i][start+length:]
+    return *texts, evidence
 
 
 def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
@@ -121,7 +133,7 @@ def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
     if len(entries[0]) != len(entries[1]):
         return before, after, proofs
     texts = [before, after]
-    for pair in zip(*entries):
+    for entry_index, pair in enumerate(zip(*entries)):
         links, contents = [], []
         for entry in pair:
             links.append(next((e.attrib.get('href', e.text or '') for e in entry if local(e.tag) == 'link' and e.attrib.get('rel', 'alternate') == 'alternate'), ''))
@@ -134,11 +146,23 @@ def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
         if normalized[0] != normalized[1]:
             continue
         encoded = [html.escape(value, quote=True).replace('&#x27;', '&#39;') for value in contents]
-        if not all(raw in text for raw, text in zip(encoded, texts)):
+        spans = []
+        for raw, text, parsed_entries in zip(encoded, texts, entries):
+            blocks = list(re.finditer(r'<(entry|item)\b[^>]*>.*?</\1>', text, re.S))
+            if len(blocks) != len(parsed_entries):
+                break
+            block = blocks[entry_index]
+            matches = [m for m in re.finditer(r'<(content|description)\b[^>]*>(.*?)</\1>', block[0], re.S) if m[2] == raw]
+            if len(matches) != 1:
+                break
+            start, end = matches[0].span(2)
+            spans.append((block.start() + start, block.start() + end))
+        if len(spans) != 2:
             continue
         canonical = html.escape(normalized[0], quote=True).replace('&#x27;', '&#39;')
         for i in range(2):
-            texts[i] = texts[i].replace(encoded[i], canonical, 1)
+            start, end = spans[i]
+            texts[i] = texts[i][:start] + canonical + texts[i][end:]
         if contents[0] != contents[1]:
             proofs.append({'article_url': links[0], 'source_image_attribute_proofs': image_proofs})
     return *texts, proofs
