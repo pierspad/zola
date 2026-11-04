@@ -10,6 +10,7 @@ import tempfile
 from urllib.parse import urljoin, urlsplit, unquote
 from pathlib import Path
 from html.parser import HTMLParser
+import xml.etree.ElementTree as ET
 
 
 def normalize_asset_urls(text, document, base_url, assets):
@@ -44,6 +45,103 @@ def normalize_asset_urls(text, document, base_url, assets):
     for start, length, replacement in reversed(parser.edits):
         text = text[:start] + replacement + text[start+length:]
     return text
+
+
+def verified_image_attributes(before, after, document, base_url, official, fork):
+    """Prove only dimensions of identical source bytes and lazy-to-eager changes.
+
+    The fork's renderer intentionally omits lazy loading on its first Markdown
+    image. This is a behavioral exception, not a claim of byte equivalence.
+    """
+    from PIL import Image
+    evidence = []
+    def source(root, value):
+        url = urlsplit(urljoin(base_url.rstrip('/') + '/' + document, html.unescape(value)))
+        if url.netloc != urlsplit(base_url).netloc or url.query or url.fragment:
+            return None
+        path = root / unquote(url.path).lstrip('/')
+        return path if path.is_file() else None
+    def tags(text):
+        values = []
+        class Images(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                if tag == 'img':
+                    values.append((self.get_starttag_text(), dict(attrs)))
+            handle_startendtag = handle_starttag
+        Images(convert_charrefs=False).feed(text)
+        return values
+    old, new = tags(before), tags(after)
+    if len(old) != len(new):
+        return before, after, evidence
+    for (raw_a, a), (raw_b, b) in zip(old, new):
+        pa, pb = source(official, a.get('src', '')), source(fork, b.get('src', ''))
+        if not pa or not pb or pa.read_bytes() != pb.read_bytes():
+            continue
+        remove_a, remove_b = [], []
+        try:
+            if pb.suffix.lower() == '.svg':
+                svg = ET.parse(pb).getroot()
+                width, height = (int(float(re.fullmatch(r'(\d+(?:\.\d+)?)(?:px|pt)?', svg.attrib[key])[1])) for key in ('width', 'height'))
+            else:
+                with Image.open(pb) as image:
+                    width, height = image.size
+            for key, dimension in [('width', width), ('height', height)]:
+                if key not in a and b.get(key) == str(dimension):
+                    remove_b.append(key)
+        except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+            pass
+        if a.get('loading') == 'lazy' and 'loading' not in b:
+            remove_a.append('loading')
+        if not remove_a and not remove_b:
+            continue
+        def strip(raw, keys):
+            for key in keys:
+                raw = re.sub(r'\s+' + key + r'=(?:"[^"]*"|\'[^\']*\'|[^\s>]+)', '', raw)
+            return raw
+        before = before.replace(raw_a, strip(raw_a, remove_a), 1)
+        after = after.replace(raw_b, strip(raw_b, remove_b), 1)
+        evidence.append({'official_asset': str(pa.relative_to(official)),
+                         'fork_asset': str(pb.relative_to(fork)),
+                         'source_sha256': hashlib.sha256(pb.read_bytes()).hexdigest(),
+                         'source_dimensions': [width, height] if remove_b else None,
+                         'official_attributes': remove_a, 'fork_attributes': remove_b})
+    return before, after, evidence
+
+
+def verified_feed_contents(before, after, base_url, official, fork, asset_maps):
+    """Compare escaped HTML within feed entries using each article's URL."""
+    proofs = []
+    try:
+        trees = [ET.fromstring(text) for text in (before, after)]
+    except ET.ParseError:
+        return before, after, proofs
+    def local(tag):
+        return tag.rsplit('}', 1)[-1]
+    entries = [[e for e in tree.iter() if local(e.tag) in {'entry', 'item'}] for tree in trees]
+    if len(entries[0]) != len(entries[1]):
+        return before, after, proofs
+    texts = [before, after]
+    for pair in zip(*entries):
+        links, contents = [], []
+        for entry in pair:
+            links.append(next((e.attrib.get('href', e.text or '') for e in entry if local(e.tag) == 'link' and e.attrib.get('rel', 'alternate') == 'alternate'), ''))
+            contents.append(next((e.text or '' for e in entry if local(e.tag) in {'content', 'description'}), ''))
+        if links[0] != links[1] or not links[0] or not all(contents):
+            continue
+        doc = urlsplit(links[0]).path.lstrip('/')
+        a, b, image_proofs = verified_image_attributes(*contents, doc, base_url, official, fork)
+        normalized = [normalize_asset_urls(value, doc, base_url, assets) for value, assets in zip((a, b), asset_maps)]
+        if normalized[0] != normalized[1]:
+            continue
+        encoded = [html.escape(value, quote=True).replace('&#x27;', '&#39;') for value in contents]
+        if not all(raw in text for raw, text in zip(encoded, texts)):
+            continue
+        canonical = html.escape(normalized[0], quote=True).replace('&#x27;', '&#39;')
+        for i in range(2):
+            texts[i] = texts[i].replace(encoded[i], canonical, 1)
+        if contents[0] != contents[1]:
+            proofs.append({'article_url': links[0], 'source_image_attribute_proofs': image_proofs})
+    return *texts, proofs
 
 
 def classify(official, fork, changed, minifier=None, base_url='https://classification.invalid/'):
@@ -94,11 +192,16 @@ def classify(official, fork, changed, minifier=None, base_url='https://classific
         before, after = official / name, fork / name
         if name.endswith(('.html', '.xml')) and before.is_file() and after.is_file():
             original, candidate = before.read_text(), after.read_text()
+            if name.endswith('.xml'):
+                original, candidate, image_proofs = verified_feed_contents(original, candidate, base_url, official, fork, asset_maps)
+            else:
+                original, candidate, image_proofs = verified_image_attributes(original, candidate, name, base_url, official, fork)
             normalized = normalize_asset_urls(original, name, base_url, asset_maps[0])
             expected = normalize_asset_urls(candidate, name, base_url, asset_maps[1])
-            if (normalized != original or expected != candidate) and normalized == expected:
+            if (image_proofs or normalized != original or expected != candidate) and normalized == expected:
                 proofs[name] = {'classification': 'verified_asset_urls_only',
-                                'scope': 'Actual resource attributes, exact URL and bytes verified; URL compatibility is separately tested.'}
+                                'scope': 'Actual resource attributes and source-image attributes only; URL compatibility and eager loading behavior are separate checks.',
+                                'source_image_attribute_proofs': image_proofs}
                 continue
         remaining.append(name)
     unknown = remaining

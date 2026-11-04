@@ -36,3 +36,38 @@ class ClassificationTests(unittest.TestCase):
     def test_unrelated_attribute_values_are_not_resource_attributes(self):
         text = "<a onclick=\"go('href=/a.js?h=verified')\">x</a>"
         self.assertEqual(normalize_asset_urls(text, 'index.html', 'https://example.com/', {('a.js', 'h=verified'): 'asset'}), text)
+
+    def test_source_dimensions_prove_only_actual_image_attributes(self):
+        from classify_personal_outputs import verified_image_attributes
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [Path(tmp)/name for name in ['official', 'fork']]
+            for root in roots:
+                root.mkdir()
+                (root/'image.svg').write_text('<svg width="792pt" height="388.8pt"/>')
+            a = '<img src="/image.svg" loading="lazy" decoding="async">'
+            b = '<img src="/image.svg" width="792" height="388" decoding="async">'
+            x, y, proofs = verified_image_attributes(a, b, 'index.html', 'https://example.com/', *roots)
+            self.assertEqual(x, y)
+            self.assertEqual(proofs[0]['source_dimensions'], [792, 388])
+            x, y, _ = verified_image_attributes(a, b.replace('792', '793'), 'index.html', 'https://example.com/', *roots)
+            self.assertNotEqual(x, y)
+            (roots[1]/'image.svg').write_text('<svg width="10" height="20"/>')
+            self.assertEqual(verified_image_attributes(a, b, 'index.html', 'https://example.com/', *roots)[2], [])
+
+    def test_feed_image_proofs_resolve_relative_to_article_and_preserve_other_text(self):
+        import html
+        from classify_personal_outputs import verified_feed_contents
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [Path(tmp)/name for name in ['official', 'fork']]
+            for root in roots:
+                (root/'article').mkdir(parents=True)
+                (root/'article/image.svg').write_text('<svg width="10" height="20"/>')
+            def feed(image, title='same'):
+                encoded = html.escape(image, quote=True).replace('&#x27;', '&#39;')
+                return '<rss><channel><item><title>'+title+'</title><link>https://example.com/article/</link><description>'+encoded+'</description></item></channel></rss>'
+            a, b = feed('<img src="image.svg" loading="lazy">'), feed('<img src="image.svg" width="10" height="20">')
+            x, y, proofs = verified_feed_contents(a, b, 'https://example.com/', *roots, [{}, {}])
+            self.assertEqual(x, y)
+            self.assertTrue(proofs)
+            x, y, _ = verified_feed_contents(a, b.replace('<title>same', '<title>changed'), 'https://example.com/', *roots, [{}, {}])
+            self.assertNotEqual(x, y)
