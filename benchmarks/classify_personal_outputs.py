@@ -50,7 +50,7 @@ def normalize_asset_urls(text, document, base_url, assets):
 def verified_image_attributes(before, after, document, base_url, official, fork, native_first=None):
     """Prove only dimensions of identical source bytes and lazy-to-eager changes.
 
-    Only the first parsed content image may lose lazy loading. Non-pixel SVG
+    Only source-verified first native Markdown images may lose lazy loading. Non-pixel SVG
     dimensions remain unclassified; no physical-unit conversion is assumed.
     """
     from PIL import Image
@@ -75,8 +75,13 @@ def verified_image_attributes(before, after, document, base_url, official, fork,
     old, new = tags(before), tags(after)
     if len(old) != len(new):
         return before, after, evidence
-    native_url = (native_first or {}).get(document)
-    native_matches = sum(urljoin(base_url.rstrip('/') + '/' + document, attrs.get('src', '')) == native_url for _, attrs, _ in old) if native_url else 0
+    native_spec = (native_first or {}).get(document)
+    native_url = native_spec.get('url') if isinstance(native_spec, dict) else native_spec
+    native_alt = native_spec.get('alt') if isinstance(native_spec, dict) else None
+    def native_match(attrs):
+        return (native_url and urljoin(base_url.rstrip('/') + '/' + document, attrs.get('src', '')) == native_url
+                and (native_alt is None or attrs.get('alt', '') == native_alt))
+    native_matches = sum(bool(native_match(attrs)) for _, attrs, _ in old) if native_url else 0
     edits = [[], []]
     for index, ((raw_a, a, pos_a), (raw_b, b, pos_b)) in enumerate(zip(old, new)):
         pa, pb = source(official, a.get('src', '')), source(fork, b.get('src', ''))
@@ -97,7 +102,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork,
                     remove_b.append(key)
         except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
             pass
-        if (index == 0 or (native_matches == 1 and urljoin(base_url.rstrip('/') + '/' + document, a.get('src', '')) == native_url)) and a.get('loading') == 'lazy' and 'loading' not in b:
+        if native_matches == 1 and native_match(a) and a.get('loading') == 'lazy' and 'loading' not in b:
             remove_a.append('loading')
         if not remove_a and not remove_b:
             continue
@@ -114,7 +119,7 @@ def verified_image_attributes(before, after, document, base_url, official, fork,
                          'svg_literal_units': svg_units,
                          'dimension_policy': 'Exact integral SVG pixel dimensions.' if svg_units else 'Decoded raster pixel dimensions.',
                          'official_attributes': remove_a, 'fork_attributes': remove_b,
-                         'loading_policy_scope': 'First parsed content image or unique URL independently verified as first native Markdown image in the exact source.'})
+                         'loading_policy_scope': 'Unique URL/alt anchor independently verified as first native Markdown image in the exact source.'})
     texts = [before, after]
     for i in range(2):
         for start, length, value in reversed(edits[i]):
@@ -266,13 +271,14 @@ def main():
             source = Path(page['source'])
             if hashlib.sha256(source.read_bytes()).hexdigest() != page['source_sha256']:
                 raise ValueError('Native Markdown source fingerprint mismatch')
-            actual = subprocess.check_output([str(helper), str(source)], text=True).strip()
-            if actual != page['first_native_image']:
+            actual, actual_alt = json.loads(subprocess.check_output([str(helper), str(source)], text=True))
+            if actual != page['first_native_image'] or actual_alt != page['first_native_alt']:
                 raise ValueError('Source first native Markdown image does not match proof')
             article_path = urlsplit(page['article_url']).path.lstrip('/')
             resolved = urljoin(page['article_url'], actual)
-            native_first[article_path] = resolved
-            native_first[article_path + 'index.html'] = resolved
+            spec = {'url': resolved, 'alt': actual_alt}
+            native_first[article_path] = spec
+            native_first[article_path + 'index.html'] = spec
     result = classify(args.official, args.fork, changed, args.minifier, args.base_url, native_first)
     if args.native_image_proofs:
         result['native_image_proof_report'] = str(args.native_image_proofs)

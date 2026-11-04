@@ -44,7 +44,7 @@ class ClassificationTests(unittest.TestCase):
             for root in roots:
                 root.mkdir()
                 (root/'image.svg').write_text('<svg width="792px" height="388px"/>')
-            a = '<img src="/image.svg" loading="lazy" decoding="async">'
+            a = '<img src="/image.svg" decoding="async">'
             b = '<img src="/image.svg" width="792" height="388" decoding="async">'
             x, y, proofs = verified_image_attributes(a, b, 'index.html', 'https://example.com/', *roots)
             self.assertEqual(x, y)
@@ -65,7 +65,7 @@ class ClassificationTests(unittest.TestCase):
             def feed(image, title='same'):
                 encoded = html.escape(image, quote=True).replace('&#x27;', '&#39;')
                 return '<rss><channel><item><title>'+title+'</title><link>https://example.com/article/</link><description>'+encoded+'</description></item></channel></rss>'
-            a, b = feed('<img src="image.svg" loading="lazy">'), feed('<img src="image.svg" width="10" height="20">')
+            a, b = feed('<img src="image.svg">'), feed('<img src="image.svg" width="10" height="20">')
             x, y, proofs = verified_feed_contents(a, b, 'https://example.com/', *roots, [{}, {}])
             self.assertEqual(x, y)
             self.assertTrue(proofs)
@@ -87,7 +87,7 @@ class ClassificationTests(unittest.TestCase):
             self.assertNotEqual(x, y)
             self.assertEqual(proofs, [])
             literal = '<script>const fake=\''+a+'\';</script>'
-            x, y, proofs = verified_image_attributes(literal+a, literal+a.replace(' loading="lazy"', ''), 'index.html', 'https://example.com/', *roots)
+            x, y, proofs = verified_image_attributes(literal+a, literal+a.replace(' loading="lazy"', ''), 'index.html', 'https://example.com/', *roots, {'index.html': {'url': 'https://example.com/image.svg', 'alt': ''}})
             self.assertEqual(x, y)
             self.assertIn(literal, x)
 
@@ -104,7 +104,7 @@ class ClassificationTests(unittest.TestCase):
             def feed(inner, outer):
                 escape = lambda text: html.escape(text, quote=True).replace('&#x27;', '&#39;')
                 return '<rss><channel><description>'+escape(outer)+'</description><item><link>https://example.com/</link><description>'+escape(inner)+'</description></item></channel></rss>'
-            x, y, _ = verified_feed_contents(feed(a, a), feed(b, b), 'https://example.com/', *roots, [{}, {}])
+            x, y, _ = verified_feed_contents(feed(a, a), feed(b, b), 'https://example.com/', *roots, [{}, {}], {'': {'url': 'https://example.com/image.svg', 'alt': ''}})
             self.assertNotEqual(x, y)
             self.assertIn('<description>'+html.escape(a, quote=True)+'</description>', x)
 
@@ -116,11 +116,16 @@ class ClassificationTests(unittest.TestCase):
                 root.mkdir()
                 (root/'image.svg').write_text('<svg width="10" height="20"/>')
             authored = '<img src="/other.svg" loading="lazy">'
-            native = '<img src="/image.svg" loading="lazy">'
+            native = '<img src="/image.svg" alt="native" loading="lazy">'
             a, b = authored+native, authored+native.replace(' loading="lazy"', '')
-            proof = {'index.html': 'https://example.com/image.svg'}
+            proof = {'index.html': {'url': 'https://example.com/image.svg', 'alt': 'native'}}
             x, y, _ = verified_image_attributes(a, b, 'index.html', 'https://example.com/', *roots, proof)
             self.assertEqual(x, y)
             self.assertIn(authored, x)
             x, y, _ = verified_image_attributes(a+native, b+native, 'index.html', 'https://example.com/', *roots, proof)
             self.assertNotEqual(x, y)
+
+            banner = '<img src="/image.svg" loading="lazy">'
+            x, y, _ = verified_image_attributes(banner+a, banner+b, 'index.html', 'https://example.com/', *roots, proof)
+            self.assertEqual(x, y)
+            self.assertIn(banner, x)
