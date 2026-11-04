@@ -333,3 +333,7 @@ Preparation-only validation (no timing samples):
 ```sh
 python3 benchmarks/matrix.py --prepare-only --output benchmarks/results/prepared.json
 ```
+
+Final post-fix checks, symmetric personal inputs, exact source-image proof scope,
+actual output sizes and remaining search/browser limits are recorded in
+[FINAL_VERIFICATION.md](FINAL_VERIFICATION.md).

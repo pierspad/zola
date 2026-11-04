@@ -371,3 +371,13 @@ The machine report records SHA-256 values for the helper source, executable and
 linked library. Proofs accept exact minifier bytes and URL hash substitutions
 only when both hash values match the actual associated asset bytes. Other HTML,
 feed, image and policy differences remain visible for review.
+
+## Final post-fix verification
+
+The authoritative final-binary result is [FINAL_VERIFICATION.md](FINAL_VERIFICATION.md).
+Final clean release `06ccb30d…` passes strict complete personal classification
+(299 accounted-for paths, zero unknown), original/compatible exact fork
+full/incremental checks, targeted SVG cache oracles and executable-only fallback.
+Earlier personal and large-capacity evidence retains its explicit older-binary
+scope. The fresh final-browser pass remains unavailable; final generated SVG
+markup and the preceding actual-browser smoke are documented separately.
