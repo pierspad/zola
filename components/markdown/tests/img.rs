@@ -302,3 +302,45 @@ fn first_image_is_eager_when_lazy_async_enabled() {
         "<p><img src=\"https://example.com/hero.jpg\" alt=\"hero\" decoding=\"async\" /></p>\n<p><img src=\"https://example.com/second.jpg\" alt=\"second\" loading=\"lazy\" decoding=\"async\" /></p>\n"
     );
 }
+
+#[test]
+fn svg_auto_dimensions_defer_ambiguous_geometry_to_browser() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tera = ZOLA_TERA.clone();
+    let config = Config::default_for_test();
+    let permalinks = HashMap::new();
+    let assets = AHashMap::new();
+    let context = create_test_context(&tera, &config, &permalinks, &assets, Some(tmp.path()), None);
+    for (index, geometry, expected) in [
+        (0, r#"width="792pt" height="388.8pt""#, None),
+        (1, r#"width="720pt" height="432pt""#, None),
+        (2, r#"width="320" height="240""#, Some((320, 240))),
+        (3, r#"width="320px" height="240px""#, Some((320, 240))),
+        (4, r#"width="320.5px" height="240px""#, None),
+        (5, r#"width="100%" height="100%" viewBox="0 0 320 240""#, None),
+        (6, r#"viewBox="0 0 320 240""#, None),
+        (7, r#"width="0" height="240""#, None),
+        (8, r#"width="-320" height="240""#, None),
+        (9, r#"width="20em" height="15em""#, None),
+        (10, r#"width="320" height="240" style="width:640px""#, None),
+    ] {
+        let name = format!("geometry-{index}.SVG");
+        let path = tmp.path().join(&name);
+        fs::write(&path, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" {geometry}/>"#))
+            .unwrap();
+        let rendered = markdown::render_content(&format!("![sample]({name})"), &context).unwrap();
+        match expected {
+            Some((w, h)) => {
+                assert!(rendered.body.contains(&format!(r#"width="{w}" height="{h}""#)))
+            }
+            None => {
+                assert!(!rendered.body.contains(" width="), "{geometry}: {}", rendered.body);
+                assert!(!rendered.body.contains(" height="), "{geometry}: {}", rendered.body);
+            }
+        }
+        if index == 0 {
+            let template_metadata = imageproc::read_image_metadata(&path).unwrap();
+            assert_eq!((template_metadata.width, template_metadata.height), (792, 388));
+        }
+    }
+}

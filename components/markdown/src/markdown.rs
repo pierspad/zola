@@ -123,14 +123,7 @@ struct ImageBuffer {
 }
 
 fn read_valid_dimensions(path: &Path) -> Option<(u32, u32)> {
-    if path.is_file()
-        && let Ok(meta) = imageproc::read_image_metadata(path)
-        && meta.width > 0
-        && meta.height > 0
-    {
-        return Some((meta.width, meta.height));
-    }
-    None
+    path.is_file().then(|| imageproc::read_markdown_image_dimensions(path)).flatten()
 }
 
 fn get_image_dimensions(

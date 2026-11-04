@@ -147,6 +147,35 @@ impl From<ImageMeta> for ImageMetaResponse {
     }
 }
 
+/// Dimensions safe to add as HTML attributes on Markdown images.
+/// SVG physical/relative units, fractional pixels and viewBox-only geometry are
+/// left to the browser; template metadata retains its established semantics.
+pub fn read_markdown_image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    if path.extension().and_then(OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
+        let source = fs::read_to_string(path).ok()?;
+        let document = roxmltree::Document::parse(&source).ok()?;
+        let svg = document.root_element();
+        if svg.tag_name().name() != "svg"
+            || svg.attribute("style").is_some()
+            || svg.descendants().any(|node| node.is_element() && node.tag_name().name() == "style")
+            || document
+                .descendants()
+                .any(|node| node.pi().is_some_and(|pi| pi.target == "xml-stylesheet"))
+        {
+            return None;
+        }
+        let dimension = |name| {
+            let raw = svg.attribute(name)?.trim();
+            let value = raw.strip_suffix("px").unwrap_or(raw).parse::<f64>().ok()?;
+            (value.is_finite() && value > 0.0 && value <= u32::MAX as f64 && value.fract() == 0.0)
+                .then_some(value as u32)
+        };
+        return Some((dimension("width")?, dimension("height")?));
+    }
+    let meta = read_image_metadata(path).ok()?;
+    (meta.width > 0 && meta.height > 0).then_some((meta.width, meta.height))
+}
+
 /// Read image dimensions (cheaply), used in `get_image_metadata()`, supports SVG
 pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetaResponse> {
     let path = path.as_ref();

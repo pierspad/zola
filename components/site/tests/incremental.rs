@@ -412,3 +412,38 @@ index_format = "fuse_json"
     assert_eq!(manifest(root)["robots.txt"], b"theme robots");
     assert_matches_clean(root);
 }
+
+#[test]
+fn svg_geometry_changes_invalidate_markdown_without_forcing_browser_dimensions() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "config.toml", "base_url='https://example.com'\n");
+    write(root, "templates/page.html", "{{ page.content | safe }}");
+    write(root, "templates/index.html", "{{ section.content | safe }}");
+    write(root, "content/_index.md", "+++\n+++\n");
+    write(
+        root,
+        "content/article/index.md",
+        "+++\ntitle='SVG geometry'\n+++\n![chart](chart.SVG)\n",
+    );
+    for (geometry, dimensions) in [
+        (r#"width="792pt" height="388.8pt""#, None),
+        (r#"width="320px" height="240px""#, Some((320, 240))),
+        (r#"width="720pt" height="432pt""#, None),
+    ] {
+        write(
+            root,
+            "content/article/chart.SVG",
+            &format!(r#"<svg xmlns="http://www.w3.org/2000/svg" {geometry}/>"#),
+        );
+        assert_matches_clean(root);
+        let body = std::fs::read_to_string(root.join("public/article/index.html")).unwrap();
+        match dimensions {
+            Some((w, h)) => assert!(body.contains(&format!(r#"width="{w}" height="{h}""#))),
+            None => {
+                assert!(!body.contains(" width="));
+                assert!(!body.contains(" height="));
+            }
+        }
+    }
+}
