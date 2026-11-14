@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'getzola/zola'
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -26,7 +27,7 @@ jobs:
       - name: Build Zola + upload Pages artifact
         uses: getzola/github-pages@066755243e69f508fd1a74739fbf1a65f656c790
         with:
-          zola_version: v0.23.7
+          zola_version: v0.23.6
           working_directory: docs
 
   deploy:

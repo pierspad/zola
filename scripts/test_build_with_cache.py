@@ -40,9 +40,14 @@ class CacheWrapperTests(unittest.TestCase):
 
     def test_explicit_and_environment_override_and_exec_status(self):
         with tempfile.TemporaryDirectory() as temp:
-            binary = Path(temp) / 'zola'
-            binary.write_text('#!/usr/bin/env python3\nimport sys\nassert sys.argv[1:5] == ["build", "--incremental", "--cache-memory-limit", "0"]\nsys.exit(17)\n')
-            binary.chmod(0o755)
+            helper = Path(temp) / 'zola_helper.py'
+            helper.write_text('#!/usr/bin/env python3\nimport sys\nassert sys.argv[1:5] == ["build", "--incremental", "--cache-memory-limit", "0"]\nsys.exit(17)\n')
+            helper.chmod(0o755)
+            if os.name == 'nt':
+                binary = Path(temp) / 'zola.cmd'
+                binary.write_text(f'@"{sys.executable}" "{helper}" %*\r\n')
+            else:
+                binary = helper
             script = str(Path(cache.__file__))
             for flags, env in [(['--cache-memory-limit', '0'], os.environ.copy()), ([], dict(os.environ, ZOLA_CACHE_MEMORY_LIMIT_MIB='0'))]:
                 result = subprocess.run([sys.executable, script, '--binary', str(binary), *flags], env=env, capture_output=True)

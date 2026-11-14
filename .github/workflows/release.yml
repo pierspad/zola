@@ -77,12 +77,18 @@ jobs:
 
       - name: Archive (UNIX)
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          cp -av target/${{ matrix.target }}/release/zola .
-          OUTPUT_DIR="$(find target -path '*/zola-*/out' -type d | head -n 1)"
+          cp -av "target/${{ matrix.target }}/release/zola" .
+          MAN_FILE="$(find "target/${{ matrix.target }}/release/build" -path '*/out/zola.1' -type f | head -n 1)"
+          if [ -z "$MAN_FILE" ]; then
+            echo "Error: generated man pages (zola.1) not found under target/${{ matrix.target }}/release/build" >&2
+            exit 1
+          fi
+          OUTPUT_DIR="$(dirname "$MAN_FILE")"
           cp -av "$OUTPUT_DIR"/* artifacts
           rm -rf target
-          tar -czf ${{ github.event.repository.name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz zola artifacts LICENSE LICENSE-MIT
+          tar -czf "${{ github.event.repository.name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" zola artifacts LICENSE LICENSE-MIT
         if: ${{ ! startsWith(matrix.os, 'windows') }}
 
       - name: Archive (Windows)

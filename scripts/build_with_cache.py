@@ -2,7 +2,7 @@
 """Run a Zola content build with an automatically sized incremental cache."""
 import argparse
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import subprocess
 import sys
@@ -34,13 +34,14 @@ def cgroup_remaining(proc=Path('/proc'), root=Path('/sys/fs/cgroup')):
                 fields, fs = before.split(), after.split()
                 if (v2 and fs[0] != 'cgroup2') or (not v2 and (fs[0] != 'cgroup' or 'memory' not in fs[2].split(','))):
                     continue
-                mount_root, mount_point = Path(fields[3]), Path(fields[4])
+                mount_root, mount_point = PurePosixPath(fields[3]), PurePosixPath(fields[4])
                 try:
-                    relative = Path(group).relative_to(mount_root)
+                    relative = PurePosixPath(group).relative_to(mount_root)
+                    mount_rel = mount_point.relative_to('/sys/fs/cgroup')
                 except ValueError:
                     continue
-                base = root / mount_point.relative_to('/sys/fs/cgroup')
-                current = base / relative
+                base = root / Path(*mount_rel.parts)
+                current = base / Path(*relative.parts)
                 while True:
                     limit = read_int(current / ('memory.max' if v2 else 'memory.limit_in_bytes'))
                     used = read_int(current / ('memory.current' if v2 else 'memory.usage_in_bytes'))
@@ -117,7 +118,10 @@ def main():
     budget = options.cache_memory_limit if options.cache_memory_limit is not None else select_budget(sources)
     details = ', '.join(f'{key}={value // MIB} MiB' for key, value in sources.items()) or 'memory detection unavailable; conservative fallback'
     print(f'Incremental cache allowance: {budget} MiB ({details}); estimated retained cache, not total process memory', file=sys.stderr, flush=True)
-    os.execvp(options.binary, command(options.binary, args, budget))
+    cmd = command(options.binary, args, budget)
+    if os.name == 'nt':
+        raise SystemExit(subprocess.run(cmd).returncode)
+    os.execvp(options.binary, cmd)
 
 
 if __name__ == '__main__':

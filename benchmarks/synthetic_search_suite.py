@@ -95,7 +95,7 @@ def guarded_probe(spec_path, index, descriptor):
             try:
                 child_pid = json.loads(evidence.read_text())['child_pid']
                 rss = next(int(line.split()[1])*1024 for line in Path(f'/proc/{child_pid}/status').read_text().splitlines() if line.startswith('VmRSS:'))
-            except (FileNotFoundError, StopIteration, json.JSONDecodeError, KeyError):
+            except (FileNotFoundError, ProcessLookupError, StopIteration, json.JSONDecodeError, KeyError):
                 rss = 0
             if rss > limit:
                 reason = 'RSS budget'

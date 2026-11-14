@@ -53,7 +53,6 @@ def verified_image_attributes(before, after, document, base_url, official, fork,
     Only source-verified first native Markdown images may lose lazy loading. Non-pixel SVG
     dimensions remain unclassified; no physical-unit conversion is assumed.
     """
-    from PIL import Image
     evidence = []
     def source(root, value):
         url = urlsplit(urljoin(base_url.rstrip('/') + '/' + document, html.unescape(value)))
@@ -95,12 +94,13 @@ def verified_image_attributes(before, after, document, base_url, official, fork,
                 svg_units = {key: svg.attrib[key] for key in ('width', 'height')}
                 width, height = (int(re.fullmatch(r'(\d+)(?:px)?', svg.attrib[key])[1]) for key in ('width', 'height'))
             else:
+                from PIL import Image
                 with Image.open(pb) as image:
                     width, height = image.size
             for key, dimension in [('width', width), ('height', height)]:
                 if key not in a and b.get(key) == str(dimension):
                     remove_b.append(key)
-        except (OSError, ValueError, KeyError, TypeError, ET.ParseError):
+        except (OSError, ValueError, KeyError, TypeError, ET.ParseError, ImportError):
             pass
         if native_matches == 1 and native_match(a) and a.get('loading') == 'lazy' and 'loading' not in b:
             remove_a.append('loading')

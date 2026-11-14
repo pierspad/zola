@@ -28,7 +28,7 @@ fn manifest(root: &Path) -> BTreeMap<String, Vec<u8>> {
         .filter(|e| e.file_type().is_file())
         .map(|e| {
             (
-                e.path().strip_prefix(&output).unwrap().to_string_lossy().into_owned(),
+                e.path().strip_prefix(&output).unwrap().to_string_lossy().replace('\\', "/"),
                 std::fs::read(e.path()).unwrap(),
             )
         })
