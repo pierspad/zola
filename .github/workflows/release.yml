@@ -45,6 +45,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -73,8 +79,9 @@ jobs:
         run: |
           mkdir -p artifacts
           cp -av target/${{ matrix.target }}/release/zola .
-          OUTPUT_DIR="$(find target -path '*/zola-*/out' -type d)"
+          OUTPUT_DIR="$(find target -path '*/zola-*/out' -type d | head -n 1)"
           cp -av "$OUTPUT_DIR"/* artifacts
+          rm -rf target
           tar -czf ${{ github.event.repository.name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz zola artifacts LICENSE LICENSE-MIT
         if: ${{ ! startsWith(matrix.os, 'windows') }}
 
@@ -153,6 +160,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h
 
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
