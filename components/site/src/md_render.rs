@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use regex::Regex;
 use tera::Tera;
 
@@ -148,6 +148,14 @@ fn rewrite_colocated_asset_links(
         return content.to_string();
     }
 
+    let mut asset_set = AHashSet::with_capacity(colocated_assets.len() * 2);
+    for (_owner_md, rel) in colocated_assets.values() {
+        asset_set.insert(rel.clone());
+        if rel.contains(' ') {
+            asset_set.insert(rel.replace(' ', "%20"));
+        }
+    }
+
     let mut result = String::with_capacity(content.len());
     let mut pos = 0;
     let bytes = content.as_bytes();
@@ -236,7 +244,7 @@ fn rewrite_colocated_asset_links(
 
         // Rewrite opening tag
         let rewritten_tag =
-            rewrite_tag(tag_slice, current_permalink, canonical_permalink, colocated_assets);
+            rewrite_tag(tag_slice, current_permalink, canonical_permalink, &asset_set);
         result.push_str(&rewritten_tag);
         pos = end_pos;
 
@@ -285,7 +293,7 @@ fn rewrite_tag(
     tag_str: &str,
     current_permalink: &str,
     canonical_permalink: &str,
-    colocated_assets: &AHashMap<String, (String, String)>,
+    asset_set: &AHashSet<String>,
 ) -> String {
     if !tag_str.starts_with('<')
         || tag_str.starts_with("</")
@@ -353,9 +361,9 @@ fn rewrite_tag(
                 }
                 let val = &tag_str[val_start..i];
                 let rewritten = if attr_name.eq_ignore_ascii_case("srcset") {
-                    rewrite_srcset(val, current_permalink, canonical_permalink, colocated_assets)
+                    rewrite_srcset(val, current_permalink, canonical_permalink, asset_set)
                 } else if matches_attr_name(attr_name) {
-                    rewrite_url(val, current_permalink, canonical_permalink, colocated_assets)
+                    rewrite_url(val, current_permalink, canonical_permalink, asset_set)
                 } else {
                     None
                 };
@@ -377,9 +385,9 @@ fn rewrite_tag(
                 }
                 let val = &tag_str[val_start..i];
                 let rewritten = if attr_name.eq_ignore_ascii_case("srcset") {
-                    rewrite_srcset(val, current_permalink, canonical_permalink, colocated_assets)
+                    rewrite_srcset(val, current_permalink, canonical_permalink, asset_set)
                 } else if matches_attr_name(attr_name) {
-                    rewrite_url(val, current_permalink, canonical_permalink, colocated_assets)
+                    rewrite_url(val, current_permalink, canonical_permalink, asset_set)
                 } else {
                     None
                 };
@@ -409,7 +417,7 @@ fn rewrite_url(
     url: &str,
     current_permalink: &str,
     canonical_permalink: &str,
-    colocated_assets: &AHashMap<String, (String, String)>,
+    asset_set: &AHashSet<String>,
 ) -> Option<String> {
     let (path_part, query_and_hash) = match url.find(['?', '#']) {
         Some(idx) => (&url[..idx], &url[idx..]),
@@ -436,18 +444,11 @@ fn rewrite_url(
         path_part
     };
 
-    let matches = colocated_assets.values().any(|(_owner_md, rel)| {
-        if sub_path == rel {
-            return true;
-        }
-        let encoded_rel = rel.replace(' ', "%20");
-        if sub_path == encoded_rel {
-            return true;
-        }
-        false
-    });
-
-    if matches { Some(format!("{canonical_permalink}{sub_path}{query_and_hash}")) } else { None }
+    if asset_set.contains(sub_path) {
+        Some(format!("{canonical_permalink}{sub_path}{query_and_hash}"))
+    } else {
+        None
+    }
 }
 
 struct SrcsetCandidate<'a> {
@@ -545,7 +546,7 @@ fn rewrite_srcset(
     srcset: &str,
     current_permalink: &str,
     canonical_permalink: &str,
-    colocated_assets: &AHashMap<String, (String, String)>,
+    asset_set: &AHashSet<String>,
 ) -> Option<String> {
     let candidates = parse_srcset_candidates(srcset);
     if candidates.is_empty() {
@@ -557,7 +558,7 @@ fn rewrite_srcset(
 
     for cand in candidates {
         if let Some(new_url) =
-            rewrite_url(cand.url, current_permalink, canonical_permalink, colocated_assets)
+            rewrite_url(cand.url, current_permalink, canonical_permalink, asset_set)
         {
             rewritten = true;
             if let Some(desc) = cand.descriptor {

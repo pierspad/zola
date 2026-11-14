@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 ahash = { workspace = true }
+rayon = { workspace = true }
 tera = {workspace = true, features = ["fast"]}
 serde = { workspace = true, features = ["derive"] }
 

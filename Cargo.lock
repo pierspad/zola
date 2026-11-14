@@ -4753,6 +4753,7 @@ dependencies = [
  "config",
  "content",
  "errors",
+ "rayon",
  "serde",
  "tera",
 ]
@@ -6093,6 +6094,7 @@ dependencies = [
  "regex",
  "same-file",
  "serde",
+ "sha2",
  "slug",
  "tempfile",
  "tera",

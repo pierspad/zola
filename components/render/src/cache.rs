@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use ahash::AHashMap;
+use rayon::prelude::*;
 use tera::{Tera, Value};
 
 use config::Config;
@@ -59,27 +60,26 @@ impl RenderCache {
     }
 
     pub fn build(&mut self, library: &Library, taxonomies: &[Taxonomy], tera: &Tera) {
-        // First pass: serialize all pages without siblings
-        let (mut pages, pages_by_canonical) = library.pages.iter().fold(
-            (
-                AHashMap::with_capacity(library.pages.len()),
-                AHashMap::<PathBuf, AHashMap<String, PathBuf>>::new(),
-            ),
-            |(mut pages, mut pages_by_canonical), (path, page)| {
-                pages.insert(
-                    path.clone(),
-                    CachedContent {
-                        value: Value::from_serializable(&SerializingPage::new(page, library)),
-                        canonical: page.file.canonical.clone(),
-                    },
-                );
-                pages_by_canonical
-                    .entry(page.file.canonical.clone())
-                    .or_default()
-                    .insert(page.lang.clone(), path.clone());
-                (pages, pages_by_canonical)
-            },
-        );
+        // First pass: serialize all pages without siblings in parallel
+        let serialized_pages: Vec<(&PathBuf, &content::Page, Value)> = library
+            .pages
+            .par_iter()
+            .map(|(path, page)| {
+                (path, page, Value::from_serializable(&SerializingPage::new(page, library)))
+            })
+            .collect();
+        let mut pages = AHashMap::with_capacity(serialized_pages.len());
+        let mut pages_by_canonical = AHashMap::<PathBuf, AHashMap<String, PathBuf>>::new();
+        for (path, page, value) in serialized_pages {
+            pages.insert(
+                path.clone(),
+                CachedContent { value, canonical: page.file.canonical.clone() },
+            );
+            pages_by_canonical
+                .entry(page.file.canonical.clone())
+                .or_default()
+                .insert(page.lang.clone(), path.clone());
+        }
 
         // Second pass: inject sibling Values from cache
         // Collect siblings first to avoid borrow issues
@@ -117,37 +117,39 @@ impl RenderCache {
             }
         }
 
-        let (mut sections, sections_by_canonical) = library.sections.iter().fold(
-            (
-                AHashMap::with_capacity(library.sections.len()),
-                AHashMap::<PathBuf, AHashMap<String, PathBuf>>::new(),
-            ),
-            |(mut sections, mut sections_by_canonical), (path, section)| {
+        let serialized_sections: Vec<(&PathBuf, &content::Section, Value)> = library
+            .sections
+            .par_iter()
+            .map(|(path, section)| {
                 // Look up cached page values
                 let section_pages: Vec<Value> = section
                     .pages
                     .iter()
                     .filter_map(|p| pages.get(p).map(|c| c.value.clone()))
                     .collect();
-
-                sections.insert(
-                    path.clone(),
-                    CachedContent {
-                        value: Value::from_serializable(&SerializingSection::new(
-                            section,
-                            library,
-                            section_pages,
-                        )),
-                        canonical: section.file.canonical.clone(),
-                    },
-                );
-                sections_by_canonical
-                    .entry(section.file.canonical.clone())
-                    .or_default()
-                    .insert(section.lang.clone(), path.clone());
-                (sections, sections_by_canonical)
-            },
-        );
+                (
+                    path,
+                    section,
+                    Value::from_serializable(&SerializingSection::new(
+                        section,
+                        library,
+                        section_pages,
+                    )),
+                )
+            })
+            .collect();
+        let mut sections = AHashMap::with_capacity(serialized_sections.len());
+        let mut sections_by_canonical = AHashMap::<PathBuf, AHashMap<String, PathBuf>>::new();
+        for (path, section, value) in serialized_sections {
+            sections.insert(
+                path.clone(),
+                CachedContent { value, canonical: section.file.canonical.clone() },
+            );
+            sections_by_canonical
+                .entry(section.file.canonical.clone())
+                .or_default()
+                .insert(section.lang.clone(), path.clone());
+        }
 
         // Second pass for sections: inject sibling subsection Values
         let section_siblings: Vec<_> = library
@@ -187,7 +189,7 @@ impl RenderCache {
 
         let mut taxonomies_slug: AHashMap<_, AHashMap<_, _>> = AHashMap::new();
         let cached_taxonomies: Vec<(_, _, _, _)> = taxonomies
-            .iter()
+            .par_iter()
             .map(|t| {
                 // Check for custom templates (None = use default, avoids allocation)
                 let single_tpl = format!("{}/single.html", t.kind.name);
@@ -195,20 +197,27 @@ impl RenderCache {
                 let single_template = tera.contains_template(&single_tpl).then_some(single_tpl);
                 let list_template = tera.contains_template(&list_tpl).then_some(list_tpl);
 
-                // Serialize all terms using cached page values
-                let mut terms = AHashMap::with_capacity(t.items.len());
-                let mut serialized_terms = Vec::with_capacity(t.items.len());
-                for term in &t.items {
-                    // Look up pre-cached page values
-                    let term_pages: Vec<Value> = term
-                        .pages
-                        .iter()
-                        .filter_map(|p| pages.get(p).map(|c| c.value.clone()))
-                        .collect();
+                // Serialize all terms in parallel using cached page values
+                let serialized_pairs: Vec<(String, Value, SerializedTaxonomyTerm<'_>)> = t
+                    .items
+                    .par_iter()
+                    .map(|term| {
+                        let term_pages: Vec<Value> = term
+                            .pages
+                            .iter()
+                            .filter_map(|p| pages.get(p).map(|c| c.value.clone()))
+                            .collect();
+                        let serialized_term =
+                            SerializedTaxonomyTerm::from_item_with_pages(term, term_pages);
+                        let term_val = Value::from_serializable(&serialized_term);
+                        (term.slug.clone(), term_val, serialized_term)
+                    })
+                    .collect();
 
-                    let serialized_term =
-                        SerializedTaxonomyTerm::from_item_with_pages(term, term_pages);
-                    terms.insert(term.slug.clone(), Value::from_serializable(&serialized_term));
+                let mut terms = AHashMap::with_capacity(serialized_pairs.len());
+                let mut serialized_terms = Vec::with_capacity(serialized_pairs.len());
+                for (slug, term_val, serialized_term) in serialized_pairs {
+                    terms.insert(slug, term_val);
                     serialized_terms.push(serialized_term);
                 }
 

@@ -43,7 +43,18 @@ pub fn build(
                     .ok_or_else(|| Error::msg("Cache memory limit is too large"))
             })
             .transpose()?;
-        site.enable_incremental_with_memory_limit(bytes.unwrap_or(usize::MAX))?;
+        let limit = match bytes {
+            Some(limit) => limit,
+            None => {
+                let auto = Site::default_cache_memory_limit_bytes();
+                log::info!(
+                    "Auto-detected incremental cache memory limit: {} MiB",
+                    auto / (1024 * 1024)
+                );
+                auto
+            }
+        };
+        site.enable_incremental_with_memory_limit(limit)?;
     }
     site.load()?;
     messages::notify_site_size(&site);

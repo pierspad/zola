@@ -130,9 +130,14 @@ impl Site {
         Ok(site)
     }
 
+    /// Default incremental cache memory budget inferred from host/cgroup RAM.
+    pub fn default_cache_memory_limit_bytes() -> usize {
+        incremental::default_memory_limit_bytes()
+    }
+
     /// Enable the persistent, conservative Markdown cache for disk builds.
     pub fn enable_incremental(&mut self) -> Result<()> {
-        self.enable_incremental_with_memory_limit(usize::MAX)
+        self.enable_incremental_with_memory_limit(incremental::default_memory_limit_bytes())
     }
 
     /// Limit estimated persistent-cache retention in bytes, independently of site memory.

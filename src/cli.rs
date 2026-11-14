@@ -59,7 +59,7 @@ pub enum Command {
         #[clap(long)]
         incremental: bool,
 
-        /// Estimated incremental-cache memory allowance in MiB (0 disables reuse)
+        /// Estimated incremental-cache memory allowance in MiB (auto-detected from host/cgroup RAM when omitted; 0 disables reuse)
         #[clap(long, requires = "incremental")]
         cache_memory_limit: Option<usize>,
 

@@ -222,6 +222,8 @@ pub struct LoadData {
     theme: Option<String>,
     client: Arc<Mutex<Client>>,
     result_cache: Arc<Mutex<HashMap<u64, Value>>>,
+    resolved_paths: Arc<Mutex<HashMap<String, Option<PathBuf>>>>,
+    cache_missing: bool,
     output_path: PathBuf,
 }
 impl LoadData {
@@ -233,7 +235,22 @@ impl LoadData {
                 .expect("reqwest client build"),
         ));
         let result_cache = Arc::new(Mutex::new(HashMap::new()));
-        Self { base_path, client, result_cache, theme, output_path }
+        let resolved_paths = Arc::new(Mutex::new(HashMap::new()));
+        Self {
+            base_path,
+            client,
+            result_cache,
+            resolved_paths,
+            cache_missing: false,
+            theme,
+            output_path,
+        }
+    }
+
+    /// Enable caching missing local file resolutions for single-shot disk builds.
+    pub fn with_cache_missing(mut self, cache_missing: bool) -> Self {
+        self.cache_missing = cache_missing;
+        self
     }
 }
 
@@ -250,6 +267,8 @@ impl Default for LoadData {
             theme: None,
             client,
             result_cache: Arc::new(Mutex::new(HashMap::new())),
+            resolved_paths: Arc::new(Mutex::new(HashMap::new())),
+            cache_missing: false,
             output_path: PathBuf::new(),
         }
     }
@@ -275,18 +294,70 @@ impl Function<TeraResult<Value>> for LoadData {
         };
         let headers: Option<Vec<String>> = kwargs.get("headers")?;
 
+        let cached_source = if url_arg.is_none() && literal_arg.is_none() {
+            if let Some(ref path) = path_arg {
+                let entry = self
+                    .resolved_paths
+                    .lock()
+                    .expect("resolved paths cache lock")
+                    .get(path)
+                    .cloned();
+                match entry {
+                    Some(Some(resolved)) => {
+                        if get_file_time(&resolved).is_some() {
+                            Some(Ok(Some(DataSource::Path(resolved))))
+                        } else {
+                            self.resolved_paths
+                                .lock()
+                                .expect("resolved paths cache lock")
+                                .remove(path);
+                            None
+                        }
+                    }
+                    Some(None) if self.cache_missing => Some(Ok(None)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let resolved_result = match cached_source {
+            Some(hit) => hit,
+            None => {
+                let res = DataSource::from_args(
+                    path_arg.clone(),
+                    url_arg,
+                    literal_arg,
+                    &self.base_path,
+                    &self.theme,
+                    &self.output_path,
+                );
+                if let Some(ref path) = path_arg {
+                    match &res {
+                        Ok(Some(DataSource::Path(resolved))) => {
+                            self.resolved_paths
+                                .lock()
+                                .expect("resolved paths cache lock")
+                                .insert(path.clone(), Some(resolved.clone()));
+                        }
+                        Ok(None) if self.cache_missing => {
+                            self.resolved_paths
+                                .lock()
+                                .expect("resolved paths cache lock")
+                                .insert(path.clone(), None);
+                        }
+                        _ => {}
+                    }
+                }
+                res
+            }
+        };
+
         // If the file doesn't exist, source is None
-        let data_source = match (
-            DataSource::from_args(
-                path_arg.clone(),
-                url_arg,
-                literal_arg,
-                &self.base_path,
-                &self.theme,
-                &self.output_path,
-            ),
-            required,
-        ) {
+        let data_source = match (resolved_result, required) {
             // If the file was not required, return a Null value to the template
             (Ok(None), false) | (Err(_), false) => {
                 return Ok(Value::none());

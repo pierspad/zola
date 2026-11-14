@@ -42,7 +42,8 @@ pub fn register_early_global_fns(site: &mut Site) {
             site.base_path.clone(),
             site.config.theme.clone(),
             site.output_path.clone(),
-        ),
+        )
+        .with_cache_missing(site.build_mode == crate::BuildMode::Disk),
     );
     site.tera.register_function("trans", functions::Trans::new(site.config.clone()));
     site.tera

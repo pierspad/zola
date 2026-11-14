@@ -97,6 +97,10 @@ impl Function<TeraResult<Value>> for GetTaxonomyUrl {
             return Ok(Value::from(permalink.as_str()));
         }
 
+        if !required {
+            return Ok(Value::none());
+        }
+
         Err(Error::message(format!(
             "`get_taxonomy_url`: couldn't find `{}` in `{}` taxonomy",
             term, kind

@@ -2,20 +2,35 @@
 use crate::Site;
 use content::Page;
 use errors::Result;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 use utils::{table_of_contents::Heading, types::InsertAnchor};
 use walkdir::WalkDir;
 
-fn digest(bytes: impl AsRef<[u8]>) -> String {
-    Sha256::digest(bytes.as_ref()).iter().map(|b| format!("{b:02x}")).collect()
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+const FALLBACK_MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+const MIN_AUTO_MEMORY_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX_DIGITS[(b >> 4) as usize]);
+        out.push(HEX_DIGITS[(b & 0x0f) as usize]);
+    }
+    String::from_utf8(out).expect("hex digits are valid ASCII")
 }
-fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
+
+fn digest(bytes: impl AsRef<[u8]>) -> String {
+    hex_encode(&Sha256::digest(bytes.as_ref()))
+}
+
+fn file_digest(path: &Path) -> std::io::Result<String> {
     let mut reader = BufReader::new(fs_err::File::open(path)?);
     let mut hash = Sha256::new();
     let mut buffer = [0; 64 * 1024];
@@ -26,7 +41,135 @@ fn file_digest(path: &std::path::Path) -> std::io::Result<String> {
         }
         hash.update(&buffer[..n]);
     }
-    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex_encode(&hash.finalize()))
+}
+
+pub(crate) fn default_memory_limit_bytes() -> usize {
+    detect_memory_limit_bytes().unwrap_or(FALLBACK_MEMORY_LIMIT_BYTES)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_memory_limit_bytes() -> Option<usize> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok();
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok();
+    select_linux_memory_limit_bytes(
+        meminfo.as_deref(),
+        cgroup.as_deref(),
+        mountinfo.as_deref(),
+        Path::new("/sys/fs/cgroup"),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_memory_limit_bytes() -> Option<usize> {
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn read_cgroup_int(path: &Path) -> Option<u64> {
+    let value: u64 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    (value < (1u64 << 60)).then_some(value)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn select_linux_memory_limit_bytes(
+    meminfo: Option<&str>,
+    cgroup_entries: Option<&str>,
+    mountinfo: Option<&str>,
+    cgroup_root: &Path,
+) -> Option<usize> {
+    let mut limits: Vec<u64> = Vec::new();
+    if let Some(text) = meminfo {
+        for line in text.lines() {
+            let Some((key, rest)) = line.split_once(':') else {
+                continue;
+            };
+            let Some(kib) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let bytes = kib.saturating_mul(1024);
+            match key.trim() {
+                "MemTotal" => limits.push(bytes / 4),
+                "MemAvailable" => limits.push(bytes / 2),
+                _ => {}
+            }
+        }
+    }
+    if let (Some(entries), Some(mounts)) = (cgroup_entries, mountinfo) {
+        let mut remaining_values = Vec::new();
+        for entry in entries.lines() {
+            let mut parts = entry.splitn(3, ':');
+            let (_id, Some(controllers), Some(group)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let v2 = controllers.is_empty();
+            if !v2 && !controllers.split(',').any(|c| c == "memory") {
+                continue;
+            }
+            for mount in mounts.lines() {
+                let Some((before, after)) = mount.split_once(" - ") else {
+                    continue;
+                };
+                let before_fields: Vec<&str> = before.split_whitespace().collect();
+                let after_fields: Vec<&str> = after.split_whitespace().collect();
+                if before_fields.len() < 5 || after_fields.len() < 3 {
+                    continue;
+                }
+                let fs_type = after_fields[0];
+                let fs_opts = after_fields[2];
+                let matches_fs = if v2 {
+                    fs_type == "cgroup2"
+                } else {
+                    fs_type == "cgroup" && fs_opts.split(',').any(|o| o == "memory")
+                };
+                if !matches_fs {
+                    continue;
+                }
+                let mount_root = Path::new(before_fields[3]);
+                let mount_point = Path::new(before_fields[4]);
+                let Ok(relative) = Path::new(group).strip_prefix(mount_root) else {
+                    continue;
+                };
+                let Ok(mount_rel) = mount_point.strip_prefix("/sys/fs/cgroup") else {
+                    continue;
+                };
+                let base = if mount_rel.as_os_str().is_empty() {
+                    cgroup_root.to_path_buf()
+                } else {
+                    cgroup_root.join(mount_rel)
+                };
+                let mut current = if relative.as_os_str().is_empty() {
+                    base.clone()
+                } else {
+                    base.join(relative)
+                };
+                loop {
+                    let (max_name, cur_name) = if v2 {
+                        ("memory.max", "memory.current")
+                    } else {
+                        ("memory.limit_in_bytes", "memory.usage_in_bytes")
+                    };
+                    if let (Some(limit), Some(used)) = (
+                        read_cgroup_int(&current.join(max_name)),
+                        read_cgroup_int(&current.join(cur_name)),
+                    ) {
+                        remaining_values.push(limit.saturating_sub(used));
+                    }
+                    if current == base || !current.pop() {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(min_remaining) = remaining_values.into_iter().min() {
+            limits.push(min_remaining / 2);
+        }
+    }
+    let chosen = limits.into_iter().min()?.max(MIN_AUTO_MEMORY_LIMIT_BYTES);
+    usize::try_from(chosen).ok().or(Some(usize::MAX))
 }
 fn stable_bytes(value: &impl Serialize) -> serde_json::Result<Vec<u8>> {
     // Tera maps use randomized hashing. Normalize through JSON's ordered map.
@@ -78,13 +221,11 @@ impl MarkdownCache {
         // Markdown reads local image dimensions, so include asset bytes, not mtimes.
         let mut roots =
             vec![site.content_path.clone(), site.static_path.clone(), site.templates_path.clone()];
-        let theme_templates = site
-            .config
-            .theme
-            .as_ref()
-            .map(|t| site.base_path.join("themes").join(t).join("templates"));
-        if let Some(theme) = &site.config.theme {
-            roots.push(site.base_path.join("themes").join(theme));
+        let theme_dir = site.config.theme.as_ref().map(|t| site.base_path.join("themes").join(t));
+        let theme_templates = theme_dir.as_ref().map(|d| d.join("templates"));
+        let theme_icons = theme_dir.as_ref().map(|d| d.join("icons"));
+        if let Some(ref td) = theme_dir {
+            roots.push(td.clone());
         }
         if let Some(h) = &site.config.markdown.highlighting {
             for path in h.extra_grammars.iter().chain(&h.extra_themes) {
@@ -93,43 +234,70 @@ impl MarkdownCache {
                     .insert(path.to_string_lossy().into_owned(), file_digest(&path)?.into_bytes());
             }
         }
+        let mut asset_paths = Vec::new();
         for root in roots {
             if !root.exists() {
                 continue;
             }
-            for entry in WalkDir::new(&root).follow_links(true) {
+            for entry in WalkDir::new(&root).follow_links(true).into_iter().filter_entry(|e| {
+                if e.file_name() == ".git" {
+                    return false;
+                }
+                if let Some(ref icons) = theme_icons
+                    && e.path() == icons
+                {
+                    return false;
+                }
+                true
+            }) {
                 let entry = entry?;
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                let mut prefix = [0; 3];
-                let count = fs_err::File::open(entry.path())?.read(&mut prefix)?;
-                // Actual Markdown sources are separately keyed. A binary image
-                // named *.md must still participate in asset invalidation.
-                if entry.path().extension().is_some_and(|e| e == "md")
-                    && count == 3
-                    && (prefix == *b"+++" || prefix == *b"---")
-                {
-                    continue;
-                }
-                let relative = entry.path().strip_prefix(&site.templates_path).ok().or_else(|| {
-                    theme_templates.as_ref().and_then(|p| entry.path().strip_prefix(p).ok())
-                });
-                if let Some(relative) = relative {
-                    if let Ok(source) = fs_err::read_to_string(entry.path()) {
-                        let name = relative.to_string_lossy().replace('\\', "/");
-                        if entry.path().starts_with(&site.templates_path)
-                            || !sources.contains_key(&name)
-                        {
-                            sources.insert(name, source);
-                        }
+                let entry_path = entry.path();
+                if entry_path.extension().is_some_and(|e| e == "md") {
+                    let mut prefix = [0; 3];
+                    let count = fs_err::File::open(entry_path)?.read(&mut prefix)?;
+                    // Actual Markdown sources are separately keyed. A binary image
+                    // named *.md must still participate in asset invalidation.
+                    if count == 3 && (prefix == *b"+++" || prefix == *b"---") {
+                        continue;
                     }
                 }
-                inputs.insert(
-                    entry.path().to_string_lossy().into_owned(),
-                    file_digest(entry.path())?.into_bytes(),
-                );
+                let relative = entry_path.strip_prefix(&site.templates_path).ok().or_else(|| {
+                    theme_templates.as_ref().and_then(|p| entry_path.strip_prefix(p).ok())
+                });
+                if let Some(relative) = relative {
+                    match fs_err::read_to_string(entry_path) {
+                        Ok(source) => {
+                            let name = relative.to_string_lossy().replace('\\', "/");
+                            inputs.insert(
+                                entry_path.to_string_lossy().into_owned(),
+                                digest(source.as_bytes()).into_bytes(),
+                            );
+                            if entry_path.starts_with(&site.templates_path)
+                                || !sources.contains_key(&name)
+                            {
+                                sources.insert(name, source);
+                            }
+                            continue;
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+                asset_paths.push(entry_path.to_path_buf());
             }
+        }
+        let asset_digests: Vec<(String, Vec<u8>)> = asset_paths
+            .par_iter()
+            .map(|entry_path| {
+                let hash = file_digest(entry_path)?;
+                Ok((entry_path.to_string_lossy().into_owned(), hash.into_bytes()))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+        for (entry_path, hash) in asset_digests {
+            inputs.insert(entry_path, hash);
         }
         let pure_templates = sources
             .keys()
@@ -360,6 +528,14 @@ fn cache_charge(value: &impl Serialize) -> usize {
     }
     count.0.saturating_mul(8)
 }
+static TAG_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?s)\{\{(.*?)\}\}|\{%(.*?)%\}").unwrap());
+static FILTER_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\|\s*([a-zA-Z_][a-zA-Z_0-9]*)").unwrap());
+static DEPENDENCY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"^\s*(?:extends|include)\s+["']([^"']+)["']\s*$"#).unwrap()
+});
+
 // Closed template subset. No calls, unknown filters/tests/tags, dynamic includes,
 // components or implicit external dependencies. Inspect inheritance recursively.
 fn pure_template(
@@ -373,10 +549,9 @@ fn pure_template(
     let Some(source) = sources.get(name) else {
         return false;
     };
-    let tags = regex::Regex::new(r"(?s)\{\{(.*?)\}\}|\{%(.*?)%\}").unwrap();
-    let filter = regex::Regex::new(r"\|\s*([a-zA-Z_][a-zA-Z_0-9]*)").unwrap();
-    let dependency =
-        regex::Regex::new(r#"^\s*(?:extends|include)\s+["']([^"']+)["']\s*$"#).unwrap();
+    let tags = &*TAG_RE;
+    let filter = &*FILTER_RE;
+    let dependency = &*DEPENDENCY_RE;
     for capture in tags.captures_iter(source) {
         let expression = capture
             .get(1)
@@ -521,5 +696,36 @@ mod tests {
             sources.insert("base.html".into(), impure.into());
             assert!(!pure_template("page.html", &sources, &mut HashSet::new()), "{impure}");
         }
+    }
+    #[test]
+    fn auto_memory_limit_respects_host_and_cgroup() {
+        let temp = tempfile::tempdir().unwrap();
+        let cg_root = temp.path();
+        std::fs::create_dir_all(cg_root.join("runner")).unwrap();
+        // 16 GiB total (-> 4 GiB), 10 GiB available (-> 5 GiB), cgroup 2 GiB remaining (-> 1 GiB)
+        std::fs::write(cg_root.join("memory.max"), "max\n").unwrap();
+        std::fs::write(cg_root.join("memory.current"), "1073741824\n").unwrap();
+        std::fs::write(
+            cg_root.join("runner/memory.max"),
+            format!("{}\n", 3u64 * 1024 * 1024 * 1024),
+        )
+        .unwrap();
+        std::fs::write(
+            cg_root.join("runner/memory.current"),
+            format!("{}\n", 1024u64 * 1024 * 1024),
+        )
+        .unwrap();
+        let meminfo = "MemTotal:       16777216 kB\nMemAvailable:   10485760 kB\n";
+        let cgroup = "0::/runner\n";
+        let mountinfo = "1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
+        let limit =
+            select_linux_memory_limit_bytes(Some(meminfo), Some(cgroup), Some(mountinfo), cg_root)
+                .unwrap();
+        assert_eq!(limit, 1024 * 1024 * 1024);
+
+        // No cgroup limit: uses min(MemTotal/4, MemAvailable/2)
+        let host_only =
+            select_linux_memory_limit_bytes(Some(meminfo), None, None, cg_root).unwrap();
+        assert_eq!(host_only, 4 * 1024 * 1024 * 1024);
     }
 }

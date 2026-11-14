@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use lightningcss::stylesheet::{MinifyOptions, ParserOptions, PrinterOptions, StyleSheet};
 use oxc_allocator::Allocator;
@@ -6,6 +8,12 @@ use oxc_codegen::{Codegen, CodegenOptions, CommentOptions};
 use oxc_minifier::{CompressOptions, Minifier, MinifierOptions};
 use oxc_parser::Parser;
 use oxc_span::SourceType;
+use sha2::{Digest, Sha256};
+
+const MAX_MINIFY_CACHE_ENTRIES: usize = 512;
+
+static MINIFY_CACHE: LazyLock<Mutex<HashMap<(PathBuf, [u8; 32]), Option<Vec<u8>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn css(source_text: &str) -> Option<String> {
     let popt = PrinterOptions { minify: true, ..Default::default() };
@@ -48,9 +56,24 @@ pub fn minify_asset_bytes(path: &Path, content: &[u8]) -> Option<Vec<u8>> {
     if !is_css && !is_js {
         return None;
     }
-    let source_str = std::str::from_utf8(content).ok()?;
-    let minified = if is_css { css(source_str) } else { js(source_str) };
-    minified.map(|s| s.into_bytes())
+    let digest: [u8; 32] = Sha256::digest(content).into();
+    let cache_key = (path.to_path_buf(), digest);
+    if let Ok(cache) = MINIFY_CACHE.lock()
+        && let Some(cached) = cache.get(&cache_key)
+    {
+        return cached.clone();
+    }
+    let result = std::str::from_utf8(content)
+        .ok()
+        .and_then(|source_str| if is_css { css(source_str) } else { js(source_str) })
+        .map(String::into_bytes);
+    if let Ok(mut cache) = MINIFY_CACHE.lock() {
+        if cache.len() >= MAX_MINIFY_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(cache_key, result.clone());
+    }
+    result
 }
 
 #[cfg(test)]
