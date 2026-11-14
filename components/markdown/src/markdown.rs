@@ -181,6 +181,7 @@ impl ImageBuffer {
             .iter()
             .filter_map(|e| match e {
                 Event::Text(t) | Event::Code(t) => Some(t.as_ref()),
+                Event::SoftBreak | Event::HardBreak => Some(" "),
                 _ => None,
             })
             .collect()

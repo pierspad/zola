@@ -344,3 +344,10 @@ fn svg_auto_dimensions_defer_ambiguous_geometry_to_browser() {
         }
     }
 }
+
+// https://github.com/getzola/zola/issues/3304
+#[test]
+fn line_breaks_in_alt_text() {
+    let body = common::render("![foo\nbar](a.png)").unwrap().body;
+    assert!(body.contains(r#"alt="foo bar""#), "{body}");
+}
