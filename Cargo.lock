@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "errors",
  "giallo",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "console"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "anstream",
  "anstyle",
@@ -875,7 +875,7 @@ checksum = "18f12cc9948ed9604230cdddc7c86e270f9401ccbe3c2e98a4378c5e7632212f"
 
 [[package]]
 name = "content"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "config",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "errors"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "anyhow",
 ]
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "imageproc"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "avif-parse",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "link_checker"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "config",
  "errors",
@@ -3080,7 +3080,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "markdown"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "config",
@@ -4747,7 +4747,7 @@ dependencies = [
 
 [[package]]
 name = "render"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "config",
@@ -5035,7 +5035,7 @@ checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 
 [[package]]
 name = "search"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ammonia",
  "config",
@@ -5268,7 +5268,7 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "site"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "base64 0.23.1",
@@ -5525,7 +5525,7 @@ dependencies = [
 
 [[package]]
 name = "templates"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "base64 0.23.1",
@@ -6077,7 +6077,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utils"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "errors",
  "filetime",
@@ -6716,7 +6716,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zola"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
@@ -6725,7 +6725,7 @@ dependencies = [
  "clap 4.6.7",
  "clap_complete",
  "clap_mangen",
- "console 0.23.6",
+ "console 0.23.7",
  "ctrlc",
  "env_logger 0.11.11",
  "errors",
